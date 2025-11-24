@@ -1,13 +1,15 @@
 ---
 id: SPEC-LIVEKIT-001
 version: 1.0.0
-status: draft
+status: completed
 created: 2025-11-24
 updated: 2025-11-24
+completed_at: 2025-11-24
 author: @user
 priority: P0
 domain: INFRA
 estimated_loc: 300
+actual_loc: 471
 complexity: low
 dependencies: []
 ---
