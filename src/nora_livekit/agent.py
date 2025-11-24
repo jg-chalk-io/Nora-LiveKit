@@ -32,7 +32,7 @@ class NoraAgent:
         self.config = config
         self.room: Optional[dict[str, Any]] = None
         self._livekit_room: Optional[dict[str, Any]] = None
-        self._shutdown_event = asyncio.Event()
+        self._shutdown_event: Optional[asyncio.Event] = None
 
         # Register signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_shutdown_signal)
@@ -48,7 +48,8 @@ class NoraAgent:
             frame: Current stack frame
         """
         log.info("agent.shutdown_signal_received", signal=signum)
-        self._shutdown_event.set()
+        if self._shutdown_event:
+            self._shutdown_event.set()
 
     async def start(self) -> None:
         """Connect to LiveKit server and join room.
@@ -56,6 +57,9 @@ class NoraAgent:
         Raises:
             Exception: If connection or room join fails
         """
+        # Create shutdown event in async context
+        self._shutdown_event = asyncio.Event()
+
         log.info("agent.starting", url=self.config.livekit_url)
 
         try:

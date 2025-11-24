@@ -4,10 +4,14 @@ import asyncio
 import threading
 
 import uvicorn
+from dotenv import load_dotenv
 
 from .agent import NoraAgent
 from .config import Config, setup_logging
 from .server import app
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def run_health_server(port: int) -> None:
