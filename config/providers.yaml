@@ -1,0 +1,28 @@
+# LLM Provider Configuration
+
+fallback_chain:
+  - openai
+  - anthropic
+  - google
+  - ollama
+
+providers:
+  openai:
+    model: gpt-4-turbo
+    timeout: 30
+    api_key: null  # Uses OPENAI_API_KEY env var
+
+  anthropic:
+    model: claude-3-5-sonnet-20241022
+    timeout: 30
+    api_key: null  # Uses ANTHROPIC_API_KEY env var
+
+  google:
+    model: gemini-2.0-flash
+    timeout: 30
+    api_key: null  # Uses GOOGLE_API_KEY env var
+
+  ollama:
+    model: mistral
+    timeout: 30
+    base_url: http://localhost:11434  # Uses OLLAMA_BASE_URL env var
