@@ -330,3 +330,104 @@ class TestAudioHandlerErrorHandling:
         with pytest.raises(RuntimeError):
             async for chunk in handler._buffer_audio(failing_audio()):
                 pass
+
+    def test_get_agent_audio_track_success(self):
+        """Test getting agent audio track successfully."""
+        mock_room = MockLiveKitRoom()
+        mock_audio_track = MockAudioTrack()
+        mock_room.audio_track = mock_audio_track
+        handler = AudioHandler(mock_room)
+
+        result = asyncio.run(handler._get_agent_audio_track())
+
+        assert result is mock_audio_track
+
+    def test_get_agent_audio_track_missing(self):
+        """Test error when audio track missing from room."""
+        mock_room = MockLiveKitRoom()
+        # Don't set audio_track on mock_room
+        handler = AudioHandler(mock_room)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            asyncio.run(handler._get_agent_audio_track())
+
+        assert "audio track" in str(exc_info.value).lower()
+
+
+class TestAudioHandlerFormatConversionEdgeCases:
+    """Additional tests for format conversion edge cases."""
+
+    def test_convert_format_unsupported_conversion(self):
+        """Test converting between unsupported format combinations."""
+        mock_room = MockLiveKitRoom()
+        handler = AudioHandler(mock_room)
+
+        audio = b"\x00\x01\x02\x03"
+        result = handler.convert_format(audio, "wav", "mp3")
+
+        # For unsupported conversions, should return as-is
+        assert result == audio
+
+    def test_convert_format_pcm_to_wav(self):
+        """Test converting from PCM to WAV format."""
+        mock_room = MockLiveKitRoom()
+        handler = AudioHandler(mock_room)
+
+        pcm_audio = b"\x00\x01\x02\x03"
+        result = handler.convert_format(pcm_audio, "pcm", "wav")
+
+        # Currently returns as-is for unsupported conversion
+        assert isinstance(result, bytes)
+
+    def test_convert_format_empty_audio(self):
+        """Test converting empty audio data."""
+        mock_room = MockLiveKitRoom()
+        handler = AudioHandler(mock_room)
+
+        empty_audio = b""
+        result = handler.convert_format(empty_audio, "pcm", "pcm")
+
+        assert result == empty_audio
+
+
+class TestAudioBufferingEdgeCases:
+    """Additional tests for audio buffering edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_buffer_audio_single_chunk(self):
+        """Test buffering a single audio chunk."""
+        mock_room = MockLiveKitRoom()
+        handler = AudioHandler(mock_room)
+
+        async def single_chunk():
+            yield b"single_chunk"
+
+        buffered = []
+        async for chunk in handler._buffer_audio(single_chunk(), buffer_duration_ms=100):
+            buffered.append(chunk)
+
+        # Single chunk should be returned as remaining data
+        assert len(buffered) > 0
+
+    @pytest.mark.asyncio
+    async def test_buffer_audio_large_chunks(self):
+        """Test buffering with large audio chunks."""
+        mock_room = MockLiveKitRoom()
+        handler = AudioHandler(mock_room, sample_rate=48000, channels=2)
+
+        large_audio = b"\x00" * 192000  # Large audio chunk
+
+        async def large_chunks():
+            yield large_audio
+            yield large_audio
+
+        buffered = []
+        async for chunk in handler._buffer_audio(large_chunks(), buffer_duration_ms=100):
+            buffered.append(chunk)
+            # Limit iterations to prevent test hanging
+            if len(buffered) >= 2:
+                break
+
+        # Should produce at least one buffered chunk
+        assert len(buffered) >= 1
+        assert all(isinstance(c, bytes) for c in buffered)

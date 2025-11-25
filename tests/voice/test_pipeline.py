@@ -271,3 +271,248 @@ class TestVoicePipelineEdgeCases:
 
         assert first_state is False
         assert second_state is False
+
+
+class TestVoicePipelineProcessAudio:
+    """Tests for audio stream processing."""
+
+    @pytest.mark.asyncio
+    async def test_process_audio_with_participant(self):
+        """Test processing audio from specific participant."""
+        config = Config(
+            livekit_url="wss://test.livekit.io",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+        )
+        mock_room = MockRoom()
+        stt = DeepgramSTT(api_key="test-key")
+        tts = CartesiaTTS(api_key="test-key")
+        audio_handler = AudioHandler(mock_room)
+
+        pipeline = VoicePipeline(config, stt, tts, audio_handler)
+
+        await pipeline.start()
+
+        # Create a proper async generator
+        async def mock_audio_stream():
+            yield b"test_chunk"
+
+        # Mock the audio handler's subscribe method
+        with patch.object(
+            audio_handler, "subscribe_to_participant_audio"
+        ) as mock_subscribe:
+            mock_subscribe.return_value = mock_audio_stream()
+
+            await pipeline.process_audio_stream("participant-123")
+
+            mock_subscribe.assert_called_once_with("participant-123")
+
+        await pipeline.stop()
+
+    @pytest.mark.asyncio
+    async def test_process_audio_empty_participant_id(self):
+        """Test processing audio with empty participant ID."""
+        config = Config(
+            livekit_url="wss://test.livekit.io",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+        )
+        mock_room = MockRoom()
+        stt = DeepgramSTT(api_key="test-key")
+        tts = CartesiaTTS(api_key="test-key")
+        audio_handler = AudioHandler(mock_room)
+
+        pipeline = VoicePipeline(config, stt, tts, audio_handler)
+
+        await pipeline.start()
+
+        # Create a proper async generator
+        async def mock_audio_stream():
+            yield b"test_chunk"
+
+        # Mock the audio handler's subscribe method
+        with patch.object(
+            audio_handler, "subscribe_to_participant_audio"
+        ) as mock_subscribe:
+            mock_subscribe.return_value = mock_audio_stream()
+
+            await pipeline.process_audio_stream("")
+
+            mock_subscribe.assert_called_once_with("")
+
+        await pipeline.stop()
+
+    @pytest.mark.asyncio
+    async def test_process_audio_stream_error_handling(self):
+        """Test error handling during audio stream processing."""
+        config = Config(
+            livekit_url="wss://test.livekit.io",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+        )
+        mock_room = MockRoom()
+        stt = DeepgramSTT(api_key="test-key")
+        tts = CartesiaTTS(api_key="test-key")
+        audio_handler = AudioHandler(mock_room)
+
+        pipeline = VoicePipeline(config, stt, tts, audio_handler)
+
+        await pipeline.start()
+
+        # Mock the audio handler to raise error
+        with patch.object(
+            audio_handler, "subscribe_to_participant_audio", side_effect=RuntimeError("Stream error")
+        ):
+            with pytest.raises(RuntimeError):
+                await pipeline.process_audio_stream("participant-123")
+
+        await pipeline.stop()
+
+
+class TestVoicePipelineTranscription:
+    """Tests for transcription handling."""
+
+    @pytest.mark.asyncio
+    async def test_handle_transcription_basic(self):
+        """Test handling transcription text."""
+        config = Config(
+            livekit_url="wss://test.livekit.io",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+        )
+        mock_room = MockRoom()
+        stt = DeepgramSTT(api_key="test-key")
+        tts = CartesiaTTS(api_key="test-key")
+        audio_handler = AudioHandler(mock_room)
+
+        pipeline = VoicePipeline(config, stt, tts, audio_handler)
+
+        await pipeline.start()
+
+        # Create proper async generator
+        async def mock_tts_stream():
+            yield b"audio_chunk1"
+            yield b"audio_chunk2"
+
+        # Mock TTS synthesize method
+        with patch.object(tts, "synthesize") as mock_synthesize:
+            mock_synthesize.return_value = mock_tts_stream()
+
+            await pipeline._handle_transcription("Hello agent")
+
+            mock_synthesize.assert_called_once()
+            call_args = mock_synthesize.call_args[0][0]
+            assert "You said:" in call_args
+            assert "Hello agent" in call_args
+
+        await pipeline.stop()
+
+    @pytest.mark.asyncio
+    async def test_handle_transcription_with_tts_error(self):
+        """Test transcription handling when TTS fails."""
+        config = Config(
+            livekit_url="wss://test.livekit.io",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+        )
+        mock_room = MockRoom()
+        stt = DeepgramSTT(api_key="test-key")
+        tts = CartesiaTTS(api_key="test-key")
+        audio_handler = AudioHandler(mock_room)
+
+        pipeline = VoicePipeline(config, stt, tts, audio_handler)
+
+        await pipeline.start()
+
+        # Mock TTS to raise error
+        with patch.object(tts, "synthesize", side_effect=RuntimeError("TTS error")):
+            # Should catch error gracefully
+            await pipeline._handle_transcription("Hello agent")
+
+        await pipeline.stop()
+
+    @pytest.mark.asyncio
+    async def test_handle_transcription_empty_text(self):
+        """Test handling empty transcription text."""
+        config = Config(
+            livekit_url="wss://test.livekit.io",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+        )
+        mock_room = MockRoom()
+        stt = DeepgramSTT(api_key="test-key")
+        tts = CartesiaTTS(api_key="test-key")
+        audio_handler = AudioHandler(mock_room)
+
+        pipeline = VoicePipeline(config, stt, tts, audio_handler)
+
+        await pipeline.start()
+
+        # Create proper async generator
+        async def mock_tts_stream():
+            yield b"audio"
+
+        with patch.object(tts, "synthesize") as mock_synthesize:
+            mock_synthesize.return_value = mock_tts_stream()
+
+            await pipeline._handle_transcription("")
+
+            # Should still process empty text
+            assert mock_synthesize.called
+
+        await pipeline.stop()
+
+
+class TestVoicePipelineStartErrorRecovery:
+    """Tests for startup error recovery."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_start_tts_failure(self):
+        """Test pipeline start when TTS fails to connect."""
+        config = Config(
+            livekit_url="wss://test.livekit.io",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+        )
+        mock_room = MockRoom()
+        stt = DeepgramSTT(api_key="test-key")
+        tts = CartesiaTTS(api_key="test-key")
+        audio_handler = AudioHandler(mock_room)
+
+        pipeline = VoicePipeline(config, stt, tts, audio_handler)
+
+        # Mock TTS to fail
+        with patch.object(tts, "connect", side_effect=RuntimeError("TTS connection failed")):
+            with pytest.raises(RuntimeError):
+                await pipeline.start()
+
+            assert pipeline.is_running is False
+
+
+class TestVoicePipelineStopErrorRecovery:
+    """Tests for shutdown error recovery."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_stop_stt_failure(self):
+        """Test pipeline stop when STT fails to disconnect."""
+        config = Config(
+            livekit_url="wss://test.livekit.io",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+        )
+        mock_room = MockRoom()
+        stt = DeepgramSTT(api_key="test-key")
+        tts = CartesiaTTS(api_key="test-key")
+        audio_handler = AudioHandler(mock_room)
+
+        pipeline = VoicePipeline(config, stt, tts, audio_handler)
+
+        await pipeline.start()
+
+        # Mock STT disconnect to fail
+        with patch.object(stt, "disconnect", side_effect=RuntimeError("STT disconnect failed")):
+            with pytest.raises(RuntimeError):
+                await pipeline.stop()
+
+        # Pipeline should still be marked as stopped
+        assert pipeline.is_running is False

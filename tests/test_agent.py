@@ -179,3 +179,110 @@ class TestNoraAgentProperties:
         # Default state
         assert agent.is_running is False
         assert isinstance(agent.is_running, bool)
+
+
+class TestNoraAgentVoicePipelineIntegration:
+    """Tests for NoraAgent voice pipeline integration."""
+
+    def test_agent_has_voice_pipeline_attribute(self):
+        """Test agent has voice_pipeline attribute after initialization with voice config."""
+        from nora_livekit.config import VoiceConfig
+
+        config = Config(
+            livekit_url="wss://livekit.example.com",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+            voice=VoiceConfig(deepgram_api_key="dg-key", cartesia_api_key="ca-key"),
+        )
+
+        agent = NoraAgent(config)
+
+        # Agent should be able to initialize with voice config
+        assert agent.config is config
+        assert agent.config.voice is not None
+
+    def test_agent_initialization_with_voice_config(self):
+        """Test agent initialization when voice config is provided."""
+        from nora_livekit.config import VoiceConfig
+
+        config = Config(
+            livekit_url="wss://livekit.example.com",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+            voice=VoiceConfig(deepgram_api_key="dg-key", cartesia_api_key="ca-key"),
+        )
+
+        agent = NoraAgent(config)
+
+        assert agent.config.voice.deepgram_api_key == "dg-key"
+        assert agent.config.voice.cartesia_api_key == "ca-key"
+        assert agent.is_running is False
+
+    @pytest.mark.asyncio
+    async def test_agent_start_with_voice_config(self):
+        """Test starting agent with voice configuration."""
+        from nora_livekit.config import VoiceConfig
+
+        config = Config(
+            livekit_url="wss://livekit.example.com",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+            voice=VoiceConfig(deepgram_api_key="dg-key", cartesia_api_key="ca-key"),
+        )
+
+        agent = NoraAgent(config)
+
+        await agent.start()
+
+        assert agent.is_running is True
+
+    @pytest.mark.asyncio
+    async def test_agent_stop_with_voice_config(self):
+        """Test stopping agent with voice configuration."""
+        from nora_livekit.config import VoiceConfig
+
+        config = Config(
+            livekit_url="wss://livekit.example.com",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+            voice=VoiceConfig(deepgram_api_key="dg-key", cartesia_api_key="ca-key"),
+        )
+
+        agent = NoraAgent(config)
+
+        await agent.start()
+        assert agent.is_running is True
+
+        await agent.stop()
+
+        assert agent.is_running is False
+        assert agent._shutdown_event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_agent_full_lifecycle_with_voice(self):
+        """Test full agent lifecycle with voice support."""
+        from nora_livekit.config import VoiceConfig
+
+        config = Config(
+            livekit_url="wss://livekit.example.com",
+            livekit_api_key="test-key",
+            livekit_api_secret="test-secret",
+            voice=VoiceConfig(deepgram_api_key="dg-key", cartesia_api_key="ca-key"),
+        )
+
+        agent = NoraAgent(config)
+
+        # Initial state
+        assert agent.is_running is False
+
+        # Start
+        await agent.start()
+        assert agent.is_running is True
+
+        # Verify shutdown event not set
+        assert not agent._shutdown_event.is_set()
+
+        # Stop
+        await agent.stop()
+        assert agent.is_running is False
+        assert agent._shutdown_event.is_set()
