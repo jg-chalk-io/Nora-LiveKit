@@ -62,6 +62,7 @@ RUN python scripts/download_models.py
 
 # Copy application code LAST (changes most frequently)
 COPY src/ ./src/
+COPY prompts/ ./prompts/
 COPY scripts/run_voice_agent.py ./scripts/run_voice_agent.py
 
 # Set ownership to non-root user
