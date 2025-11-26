@@ -256,26 +256,29 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect()
     logger.info(f"Connected to room: {ctx.room.name}")
 
-    # Start Langfuse conversation trace
-    tracer = get_tracer()
-    if tracer and tracer.enabled:
-        # Get caller identity from room participant if available
-        caller_phone = ""
-        for participant in ctx.room.remote_participants.values():
-            caller_phone = participant.identity or ""
-            break
+    # Start Langfuse conversation trace (non-fatal if it fails)
+    try:
+        tracer = get_tracer()
+        if tracer and tracer.enabled:
+            # Get caller identity from room participant if available
+            caller_phone = ""
+            for participant in ctx.room.remote_participants.values():
+                caller_phone = participant.identity or ""
+                break
 
-        tracer.start_conversation(
-            caller_phone=caller_phone,
-            office_name=OFFICE_NAME,
-            metadata={
-                "room_name": ctx.room.name,
-                "is_clinic_open": IS_CLINIC_OPEN,
-                "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
-                "voice_id": CARTESIA_VOICE_ID[:8],
-            },
-        )
-        logger.info("Langfuse trace started")
+            tracer.start_conversation(
+                caller_phone=caller_phone,
+                office_name=OFFICE_NAME,
+                metadata={
+                    "room_name": ctx.room.name,
+                    "is_clinic_open": IS_CLINIC_OPEN,
+                    "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
+                    "voice_id": CARTESIA_VOICE_ID[:8],
+                },
+            )
+            logger.info("Langfuse trace started")
+    except Exception as e:
+        logger.warning(f"Langfuse tracing failed (non-fatal): {e}")
 
     # Get prewarmed Nora prompt
     nora_prompt = ctx.proc.userdata.get("nora_prompt", _get_fallback_prompt())

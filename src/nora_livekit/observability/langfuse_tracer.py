@@ -117,16 +117,22 @@ class NoraLangfuseTracer:
             self.langfuse = None
             return
 
-        self.langfuse = Langfuse(
-            public_key=public_key or os.getenv("LANGFUSE_PUBLIC_KEY"),
-            secret_key=secret_key or os.getenv("LANGFUSE_SECRET_KEY"),
-            host=host,
-        )
+        try:
+            self.langfuse = Langfuse(
+                public_key=public_key or os.getenv("LANGFUSE_PUBLIC_KEY"),
+                secret_key=secret_key or os.getenv("LANGFUSE_SECRET_KEY"),
+                host=host,
+            )
+        except Exception as e:
+            logger.warning("langfuse.init_failed", error=str(e))
+            self.langfuse = None
+            self.enabled = False
+            return
 
         self.session_id = session_id
-        self._current_trace: Optional[StatefulTraceClient] = None
+        self._current_trace: Optional[Any] = None
         self._current_turn: Optional[TurnMetrics] = None
-        self._turn_span: Optional[StatefulSpanClient] = None
+        self._turn_span: Optional[Any] = None
 
         logger.info("langfuse.initialized", host=host, session_id=session_id)
 
@@ -135,7 +141,7 @@ class NoraLangfuseTracer:
         caller_phone: str = "",
         office_name: str = "",
         metadata: Optional[dict] = None,
-    ) -> Optional[StatefulTraceClient]:
+    ) -> Optional[Any]:
         """Start a new conversation trace.
 
         Args:
@@ -144,33 +150,28 @@ class NoraLangfuseTracer:
             metadata: Additional metadata
 
         Returns:
-            Trace client for the conversation
+            Trace ID or None
         """
         if not self.enabled or not self.langfuse:
             return None
 
-        trace_metadata = {
-            "caller_phone": caller_phone,
-            "office_name": office_name,
-            "agent": "nora",
-            "platform": "livekit",
-            **(metadata or {}),
-        }
+        try:
+            # Langfuse v3 uses create_trace_id for manual tracing
+            trace_id = self.langfuse.create_trace_id()
+            self._current_trace = trace_id
 
-        self._current_trace = self.langfuse.trace(
-            name="nora-conversation",
-            session_id=self.session_id,
-            metadata=trace_metadata,
-            tags=["voice-agent", "nora", office_name] if office_name else ["voice-agent", "nora"],
-        )
+            # Log the conversation start as a structured event
+            logger.info(
+                "langfuse.conversation_started",
+                trace_id=trace_id,
+                caller_phone=caller_phone[:4] + "..." if caller_phone else "unknown",
+                office_name=office_name,
+            )
 
-        logger.info(
-            "langfuse.conversation_started",
-            trace_id=self._current_trace.id,
-            caller_phone=caller_phone[:4] + "..." if caller_phone else "unknown",
-        )
-
-        return self._current_trace
+            return trace_id
+        except Exception as e:
+            logger.warning("langfuse.start_conversation_failed", error=str(e))
+            return None
 
     def end_conversation(
         self,
@@ -186,19 +187,18 @@ class NoraLangfuseTracer:
         if not self._current_trace:
             return
 
-        self._current_trace.update(
-            output={"outcome": outcome, **(metadata or {})},
-        )
+        try:
+            # Flush to ensure all events are sent
+            if self.langfuse:
+                self.langfuse.flush()
 
-        # Flush to ensure all events are sent
-        if self.langfuse:
-            self.langfuse.flush()
-
-        logger.info(
-            "langfuse.conversation_ended",
-            trace_id=self._current_trace.id,
-            outcome=outcome,
-        )
+            logger.info(
+                "langfuse.conversation_ended",
+                trace_id=self._current_trace,
+                outcome=outcome,
+            )
+        except Exception as e:
+            logger.warning("langfuse.end_conversation_failed", error=str(e))
 
         self._current_trace = None
 
