@@ -15,89 +15,54 @@ Environment Variables:
 """
 
 import os
-import time
-from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Generator, Optional
+from typing import Any, Optional
 
 import structlog
-from langfuse import Langfuse
 
 logger = structlog.get_logger(__name__)
-
-# Type aliases for Langfuse objects (actual types are internal)
-StatefulTraceClient = Any
-StatefulSpanClient = Any
 
 # Global tracer instance
 _tracer: Optional["NoraLangfuseTracer"] = None
 
 
 @dataclass
-class TurnMetrics:
-    """Metrics for a single conversation turn."""
+class ConversationMetrics:
+    """Accumulated metrics for a conversation session."""
 
-    # Timing (all in milliseconds)
-    stt_start_ms: float = 0
-    stt_end_ms: float = 0
-    llm_start_ms: float = 0
-    llm_end_ms: float = 0
-    tts_start_ms: float = 0
-    tts_end_ms: float = 0
+    # Counts
+    total_turns: int = 0
+    total_tool_calls: int = 0
 
     # STT metrics
-    audio_duration_ms: float = 0
-    transcript_word_count: int = 0
-    stt_confidence: float = 0
+    stt_total_duration_ms: float = 0
+    stt_total_characters: int = 0
 
     # LLM metrics
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    llm_model: str = ""
+    llm_total_prompt_tokens: int = 0
+    llm_total_completion_tokens: int = 0
+    llm_total_latency_ms: float = 0
 
     # TTS metrics
-    tts_character_count: int = 0
-    tts_audio_duration_ms: float = 0
+    tts_total_characters: int = 0
+    tts_total_latency_ms: float = 0
 
-    # Overall
-    turn_id: str = ""
-    user_text: str = ""
-    assistant_text: str = ""
-
-    @property
-    def stt_latency_ms(self) -> float:
-        """Time from audio start to transcript ready."""
-        return self.stt_end_ms - self.stt_start_ms if self.stt_end_ms else 0
-
-    @property
-    def llm_latency_ms(self) -> float:
-        """Time from prompt sent to response received."""
-        return self.llm_end_ms - self.llm_start_ms if self.llm_end_ms else 0
-
-    @property
-    def tts_latency_ms(self) -> float:
-        """Time to first audio byte from TTS."""
-        return self.tts_end_ms - self.tts_start_ms if self.tts_end_ms else 0
-
-    @property
-    def total_latency_ms(self) -> float:
-        """Total turn latency from user speech end to assistant speech start."""
-        # STT end -> LLM -> TTS start
-        if self.stt_end_ms and self.tts_start_ms:
-            return self.tts_start_ms - self.stt_end_ms
-        return self.stt_latency_ms + self.llm_latency_ms + self.tts_latency_ms
+    # Pipeline latency (end-to-end)
+    total_pipeline_latency_ms: float = 0
 
 
 class NoraLangfuseTracer:
-    """Langfuse tracer for comprehensive voice agent observability."""
+    """Langfuse tracer for comprehensive voice agent observability.
+
+    Uses Langfuse v3 API with context managers and proper span hierarchy.
+    Integrates with LiveKit's metrics_collected events.
+    """
 
     def __init__(
         self,
         public_key: Optional[str] = None,
         secret_key: Optional[str] = None,
-        host: str = "https://cloud.langfuse.com",
+        host: Optional[str] = None,
         enabled: bool = True,
         session_id: Optional[str] = None,
     ) -> None:
@@ -106,11 +71,15 @@ class NoraLangfuseTracer:
         Args:
             public_key: Langfuse public key (or LANGFUSE_PUBLIC_KEY env var)
             secret_key: Langfuse secret key (or LANGFUSE_SECRET_KEY env var)
-            host: Langfuse host URL
+            host: Langfuse host URL (or LANGFUSE_HOST env var)
             enabled: Whether tracing is enabled
             session_id: Optional session ID for grouping traces
         """
-        self.enabled = enabled and bool(public_key or os.getenv("LANGFUSE_PUBLIC_KEY"))
+        self.public_key = public_key or os.getenv("LANGFUSE_PUBLIC_KEY")
+        self.secret_key = secret_key or os.getenv("LANGFUSE_SECRET_KEY")
+        self.host = host or os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
+
+        self.enabled = enabled and bool(self.public_key)
 
         if not self.enabled:
             logger.info("langfuse.disabled", reason="No API keys provided")
@@ -118,10 +87,12 @@ class NoraLangfuseTracer:
             return
 
         try:
+            from langfuse import Langfuse
+
             self.langfuse = Langfuse(
-                public_key=public_key or os.getenv("LANGFUSE_PUBLIC_KEY"),
-                secret_key=secret_key or os.getenv("LANGFUSE_SECRET_KEY"),
-                host=host,
+                public_key=self.public_key,
+                secret_key=self.secret_key,
+                host=self.host,
             )
         except Exception as e:
             logger.warning("langfuse.init_failed", error=str(e))
@@ -131,10 +102,9 @@ class NoraLangfuseTracer:
 
         self.session_id = session_id
         self._current_trace: Optional[Any] = None
-        self._current_turn: Optional[TurnMetrics] = None
-        self._turn_span: Optional[Any] = None
+        self._metrics = ConversationMetrics()
 
-        logger.info("langfuse.initialized", host=host, session_id=session_id)
+        logger.info("langfuse.initialized", host=self.host, session_id=session_id)
 
     def start_conversation(
         self,
@@ -150,25 +120,39 @@ class NoraLangfuseTracer:
             metadata: Additional metadata
 
         Returns:
-            Trace ID or None
+            Trace object or None
         """
         if not self.enabled or not self.langfuse:
             return None
 
         try:
-            # Langfuse v3 uses create_trace_id for manual tracing
-            trace_id = self.langfuse.create_trace_id()
-            self._current_trace = trace_id
+            # Build trace metadata
+            trace_metadata = {
+                "caller_phone": caller_phone[:4] + "..." if caller_phone else "unknown",
+                "office_name": office_name,
+                "agent": "nora",
+                "platform": "livekit",
+                **(metadata or {}),
+            }
 
-            # Log the conversation start as a structured event
+            # Create trace using v3 API
+            self._current_trace = self.langfuse.trace(
+                name="nora-conversation",
+                session_id=self.session_id,
+                metadata=trace_metadata,
+                tags=["voice-agent", "nora", office_name] if office_name else ["voice-agent", "nora"],
+            )
+
+            # Reset metrics for new conversation
+            self._metrics = ConversationMetrics()
+
             logger.info(
                 "langfuse.conversation_started",
-                trace_id=trace_id,
-                caller_phone=caller_phone[:4] + "..." if caller_phone else "unknown",
+                trace_id=self._current_trace.id if self._current_trace else None,
                 office_name=office_name,
             )
 
-            return trace_id
+            return self._current_trace
         except Exception as e:
             logger.warning("langfuse.start_conversation_failed", error=str(e))
             return None
@@ -178,7 +162,7 @@ class NoraLangfuseTracer:
         outcome: str = "completed",
         metadata: Optional[dict] = None,
     ) -> None:
-        """End the current conversation trace.
+        """End the current conversation trace with summary metrics.
 
         Args:
             outcome: Conversation outcome (completed, transferred, dropped, etc.)
@@ -188,252 +172,210 @@ class NoraLangfuseTracer:
             return
 
         try:
+            # Build summary output
+            summary = {
+                "outcome": outcome,
+                "metrics": {
+                    "total_turns": self._metrics.total_turns,
+                    "total_tool_calls": self._metrics.total_tool_calls,
+                    "stt": {
+                        "total_duration_ms": self._metrics.stt_total_duration_ms,
+                        "total_characters": self._metrics.stt_total_characters,
+                    },
+                    "llm": {
+                        "prompt_tokens": self._metrics.llm_total_prompt_tokens,
+                        "completion_tokens": self._metrics.llm_total_completion_tokens,
+                        "total_latency_ms": self._metrics.llm_total_latency_ms,
+                    },
+                    "tts": {
+                        "total_characters": self._metrics.tts_total_characters,
+                        "total_latency_ms": self._metrics.tts_total_latency_ms,
+                    },
+                    "pipeline_latency_ms": self._metrics.total_pipeline_latency_ms,
+                },
+                **(metadata or {}),
+            }
+
+            # Update trace with final output
+            self._current_trace.update(output=summary)
+
             # Flush to ensure all events are sent
             if self.langfuse:
                 self.langfuse.flush()
 
             logger.info(
                 "langfuse.conversation_ended",
-                trace_id=self._current_trace,
+                trace_id=self._current_trace.id,
                 outcome=outcome,
+                total_turns=self._metrics.total_turns,
             )
         except Exception as e:
             logger.warning("langfuse.end_conversation_failed", error=str(e))
 
         self._current_trace = None
 
-    def start_turn(self, turn_id: str = "") -> TurnMetrics:
-        """Start tracking a conversation turn.
+    def trace_metrics(self, metrics: Any) -> None:
+        """Process LiveKit metrics_collected event and send to Langfuse.
 
-        A turn is: User speaks -> STT -> LLM -> TTS -> Assistant speaks
+        This is the main integration point with LiveKit's metrics system.
+        Called from session.on("metrics_collected") handler.
 
         Args:
-            turn_id: Optional turn identifier
-
-        Returns:
-            TurnMetrics object for this turn
+            metrics: LiveKit AgentMetrics object
         """
-        self._current_turn = TurnMetrics(
-            turn_id=turn_id or f"turn-{int(time.time() * 1000)}",
-        )
+        if not self._current_trace:
+            return
 
-        if self._current_trace:
-            self._turn_span = self._current_trace.span(
-                name="conversation-turn",
-                metadata={"turn_id": self._current_turn.turn_id},
+        try:
+            # Process different metric types from LiveKit
+            for metric in metrics:
+                metric_type = type(metric).__name__
+
+                if metric_type == "STTMetrics":
+                    self._trace_stt_metrics(metric)
+                elif metric_type == "LLMMetrics":
+                    self._trace_llm_metrics(metric)
+                elif metric_type == "TTSMetrics":
+                    self._trace_tts_metrics(metric)
+                elif metric_type == "PipelineMetrics":
+                    self._trace_pipeline_metrics(metric)
+
+        except Exception as e:
+            logger.warning("langfuse.trace_metrics_failed", error=str(e))
+
+    def _trace_stt_metrics(self, metric: Any) -> None:
+        """Trace STT (speech-to-text) metrics."""
+        try:
+            duration_ms = getattr(metric, "duration", 0) * 1000
+            audio_duration_ms = getattr(metric, "audio_duration", 0) * 1000
+
+            # Create span for STT
+            span = self._current_trace.span(
+                name="stt-transcription",
+                input={"audio_duration_ms": audio_duration_ms},
+                output={"transcript": getattr(metric, "transcript", "")},
+                metadata={
+                    "duration_ms": duration_ms,
+                    "streamed": getattr(metric, "streamed", False),
+                },
             )
+            span.end()
 
-        return self._current_turn
+            # Accumulate metrics
+            self._metrics.stt_total_duration_ms += duration_ms
+            self._metrics.stt_total_characters += len(getattr(metric, "transcript", ""))
 
-    def end_turn(self) -> Optional[TurnMetrics]:
-        """End the current turn and log metrics.
+            logger.debug(
+                "langfuse.stt_traced",
+                duration_ms=duration_ms,
+                audio_duration_ms=audio_duration_ms,
+            )
+        except Exception as e:
+            logger.warning("langfuse.stt_trace_failed", error=str(e))
 
-        Returns:
-            Completed TurnMetrics
-        """
-        if not self._current_turn:
-            return None
+    def _trace_llm_metrics(self, metric: Any) -> None:
+        """Trace LLM (language model) metrics."""
+        try:
+            ttft_ms = getattr(metric, "ttft", 0) * 1000  # Time to first token
+            duration_ms = getattr(metric, "duration", 0) * 1000
+            prompt_tokens = getattr(metric, "prompt_tokens", 0)
+            completion_tokens = getattr(metric, "completion_tokens", 0)
 
-        turn = self._current_turn
-
-        # Log turn summary
-        if self._turn_span:
-            self._turn_span.end(
-                output={
-                    "user_text": turn.user_text,
-                    "assistant_text": turn.assistant_text,
+            # Create generation span for LLM
+            generation = self._current_trace.generation(
+                name="llm-generation",
+                model=getattr(metric, "model", "unknown"),
+                input={"request_id": getattr(metric, "request_id", "")},
+                output=getattr(metric, "content", ""),
+                usage={
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": prompt_tokens + completion_tokens,
                 },
                 metadata={
-                    "latency": {
-                        "stt_ms": turn.stt_latency_ms,
-                        "llm_ms": turn.llm_latency_ms,
-                        "tts_ms": turn.tts_latency_ms,
-                        "total_ms": turn.total_latency_ms,
-                    },
-                    "tokens": {
-                        "prompt": turn.prompt_tokens,
-                        "completion": turn.completion_tokens,
-                        "total": turn.total_tokens,
-                    },
-                    "stt": {
-                        "audio_duration_ms": turn.audio_duration_ms,
-                        "word_count": turn.transcript_word_count,
-                        "confidence": turn.stt_confidence,
-                    },
-                    "tts": {
-                        "character_count": turn.tts_character_count,
-                        "audio_duration_ms": turn.tts_audio_duration_ms,
-                    },
+                    "ttft_ms": ttft_ms,
+                    "duration_ms": duration_ms,
+                    "cancelled": getattr(metric, "cancelled", False),
                 },
             )
+            generation.end()
 
-        logger.info(
-            "langfuse.turn_completed",
-            turn_id=turn.turn_id,
-            total_latency_ms=turn.total_latency_ms,
-            stt_ms=turn.stt_latency_ms,
-            llm_ms=turn.llm_latency_ms,
-            tts_ms=turn.tts_latency_ms,
-        )
+            # Accumulate metrics
+            self._metrics.llm_total_prompt_tokens += prompt_tokens
+            self._metrics.llm_total_completion_tokens += completion_tokens
+            self._metrics.llm_total_latency_ms += duration_ms
+            self._metrics.total_turns += 1
 
-        self._current_turn = None
-        self._turn_span = None
-
-        return turn
-
-    @contextmanager
-    def trace_stt(
-        self,
-        model: str = "nova-3",
-        language: str = "en",
-    ) -> Generator[dict, None, None]:
-        """Context manager for tracing STT transcription.
-
-        Args:
-            model: STT model name
-            language: Language code
-
-        Yields:
-            Dict to populate with results (transcript, confidence, etc.)
-        """
-        result: dict = {}
-        start_time = time.time() * 1000
-
-        if self._current_turn:
-            self._current_turn.stt_start_ms = start_time
-
-        span = None
-        if self._turn_span:
-            span = self._turn_span.span(
-                name="stt-transcription",
-                input={"model": model, "language": language},
+            logger.debug(
+                "langfuse.llm_traced",
+                ttft_ms=ttft_ms,
+                duration_ms=duration_ms,
+                tokens=prompt_tokens + completion_tokens,
             )
+        except Exception as e:
+            logger.warning("langfuse.llm_trace_failed", error=str(e))
 
+    def _trace_tts_metrics(self, metric: Any) -> None:
+        """Trace TTS (text-to-speech) metrics."""
         try:
-            yield result
-        finally:
-            end_time = time.time() * 1000
+            ttfb_ms = getattr(metric, "ttfb", 0) * 1000  # Time to first byte
+            duration_ms = getattr(metric, "duration", 0) * 1000
+            characters = getattr(metric, "characters_count", 0)
 
-            if self._current_turn:
-                self._current_turn.stt_end_ms = end_time
-                self._current_turn.user_text = result.get("transcript", "")
-                self._current_turn.transcript_word_count = len(
-                    result.get("transcript", "").split()
-                )
-                self._current_turn.stt_confidence = result.get("confidence", 0)
-                self._current_turn.audio_duration_ms = result.get("audio_duration_ms", 0)
-
-            if span:
-                span.end(
-                    output=result,
-                    metadata={
-                        "latency_ms": end_time - start_time,
-                        "word_count": len(result.get("transcript", "").split()),
-                    },
-                )
-
-    @contextmanager
-    def trace_llm(
-        self,
-        model: str = "gpt-4o-mini",
-        messages: Optional[list] = None,
-    ) -> Generator[dict, None, None]:
-        """Context manager for tracing LLM generation.
-
-        Args:
-            model: LLM model name
-            messages: Input messages
-
-        Yields:
-            Dict to populate with results (response, tokens, etc.)
-        """
-        result: dict = {}
-        start_time = time.time() * 1000
-
-        if self._current_turn:
-            self._current_turn.llm_start_ms = start_time
-            self._current_turn.llm_model = model
-
-        generation = None
-        if self._turn_span:
-            generation = self._turn_span.generation(
-                name="llm-generation",
-                model=model,
-                input=messages,
-            )
-
-        try:
-            yield result
-        finally:
-            end_time = time.time() * 1000
-
-            if self._current_turn:
-                self._current_turn.llm_end_ms = end_time
-                self._current_turn.assistant_text = result.get("response", "")
-                self._current_turn.prompt_tokens = result.get("prompt_tokens", 0)
-                self._current_turn.completion_tokens = result.get("completion_tokens", 0)
-                self._current_turn.total_tokens = result.get("total_tokens", 0)
-
-            if generation:
-                generation.end(
-                    output=result.get("response", ""),
-                    usage={
-                        "prompt_tokens": result.get("prompt_tokens", 0),
-                        "completion_tokens": result.get("completion_tokens", 0),
-                        "total_tokens": result.get("total_tokens", 0),
-                    },
-                    metadata={
-                        "latency_ms": end_time - start_time,
-                        "finish_reason": result.get("finish_reason", ""),
-                    },
-                )
-
-    @contextmanager
-    def trace_tts(
-        self,
-        voice_id: str = "",
-        text: str = "",
-    ) -> Generator[dict, None, None]:
-        """Context manager for tracing TTS synthesis.
-
-        Args:
-            voice_id: TTS voice ID
-            text: Text to synthesize
-
-        Yields:
-            Dict to populate with results (audio_duration_ms, etc.)
-        """
-        result: dict = {}
-        start_time = time.time() * 1000
-
-        if self._current_turn:
-            self._current_turn.tts_start_ms = start_time
-            self._current_turn.tts_character_count = len(text)
-
-        span = None
-        if self._turn_span:
-            span = self._turn_span.span(
+            # Create span for TTS
+            span = self._current_trace.span(
                 name="tts-synthesis",
-                input={"voice_id": voice_id, "text_length": len(text)},
+                input={"characters": characters},
+                output={"audio_duration_ms": getattr(metric, "audio_duration", 0) * 1000},
+                metadata={
+                    "ttfb_ms": ttfb_ms,
+                    "duration_ms": duration_ms,
+                    "streamed": getattr(metric, "streamed", False),
+                    "cancelled": getattr(metric, "cancelled", False),
+                },
             )
+            span.end()
 
+            # Accumulate metrics
+            self._metrics.tts_total_characters += characters
+            self._metrics.tts_total_latency_ms += ttfb_ms  # Track TTFB for latency
+
+            logger.debug(
+                "langfuse.tts_traced",
+                ttfb_ms=ttfb_ms,
+                characters=characters,
+            )
+        except Exception as e:
+            logger.warning("langfuse.tts_trace_failed", error=str(e))
+
+    def _trace_pipeline_metrics(self, metric: Any) -> None:
+        """Trace end-to-end pipeline metrics."""
         try:
-            yield result
-        finally:
-            end_time = time.time() * 1000
+            sequence_id = getattr(metric, "sequence_id", "")
+            e2e_latency_ms = getattr(metric, "e2e_latency", 0) * 1000
 
-            if self._current_turn:
-                self._current_turn.tts_end_ms = end_time
-                self._current_turn.tts_audio_duration_ms = result.get("audio_duration_ms", 0)
+            # Create span for pipeline
+            span = self._current_trace.span(
+                name="pipeline-turn",
+                input={"sequence_id": sequence_id},
+                metadata={
+                    "e2e_latency_ms": e2e_latency_ms,
+                    "stt_latency_ms": getattr(metric, "stt_latency", 0) * 1000,
+                    "llm_latency_ms": getattr(metric, "llm_latency", 0) * 1000,
+                    "tts_latency_ms": getattr(metric, "tts_latency", 0) * 1000,
+                },
+            )
+            span.end()
 
-            if span:
-                span.end(
-                    output={"audio_duration_ms": result.get("audio_duration_ms", 0)},
-                    metadata={
-                        "latency_ms": end_time - start_time,
-                        "character_count": len(text),
-                    },
-                )
+            # Accumulate metrics
+            self._metrics.total_pipeline_latency_ms += e2e_latency_ms
+
+            logger.debug(
+                "langfuse.pipeline_traced",
+                e2e_latency_ms=e2e_latency_ms,
+            )
+        except Exception as e:
+            logger.warning("langfuse.pipeline_trace_failed", error=str(e))
 
     def trace_tool_call(
         self,
@@ -450,32 +392,41 @@ class NoraLangfuseTracer:
             result: Tool result
             latency_ms: Call latency in milliseconds
         """
-        if not self._turn_span:
+        if not self._current_trace:
             return
 
-        self._turn_span.span(
-            name=f"tool-{tool_name}",
-            input=parameters,
-            output=result,
-            metadata={"latency_ms": latency_ms},
-        ).end()
+        try:
+            span = self._current_trace.span(
+                name=f"tool-{tool_name}",
+                input=parameters,
+                output=result,
+                metadata={"latency_ms": latency_ms},
+            )
+            span.end()
 
-        logger.info(
-            "langfuse.tool_traced",
-            tool=tool_name,
-            latency_ms=latency_ms,
-        )
+            self._metrics.total_tool_calls += 1
+
+            logger.info(
+                "langfuse.tool_traced",
+                tool=tool_name,
+                latency_ms=latency_ms,
+            )
+        except Exception as e:
+            logger.warning("langfuse.tool_trace_failed", error=str(e))
 
     def flush(self) -> None:
         """Flush all pending events to Langfuse."""
         if self.langfuse:
-            self.langfuse.flush()
+            try:
+                self.langfuse.flush()
+            except Exception as e:
+                logger.warning("langfuse.flush_failed", error=str(e))
 
 
 def init_langfuse(
     public_key: Optional[str] = None,
     secret_key: Optional[str] = None,
-    host: str = "https://cloud.langfuse.com",
+    host: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> NoraLangfuseTracer:
     """Initialize the global Langfuse tracer.

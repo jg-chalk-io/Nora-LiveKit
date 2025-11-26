@@ -39,6 +39,7 @@ from livekit.agents import (
     WorkerOptions,
     cli,
     function_tool,
+    metrics,
     RunContext,
 )
 import livekit.plugins.deepgram as deepgram
@@ -330,6 +331,43 @@ async def entrypoint(ctx: JobContext):
         allow_interruptions=True,
         min_interruption_duration=0.5,
     )
+
+    # Set up Langfuse metrics collection
+    tracer = get_tracer()
+    usage_collector = metrics.UsageCollector()
+
+    @session.on("metrics_collected")
+    def on_metrics_collected(ev):
+        """Handle LiveKit metrics and send to Langfuse."""
+        # Log metrics locally
+        metrics.log_metrics(ev.metrics)
+
+        # Accumulate for session summary
+        usage_collector.collect(ev.metrics)
+
+        # Send to Langfuse (non-fatal)
+        try:
+            if tracer and tracer.enabled:
+                tracer.trace_metrics(ev.metrics)
+        except Exception as e:
+            logger.warning(f"Langfuse metrics failed: {e}")
+
+    # Register shutdown callback to end Langfuse trace
+    async def on_shutdown():
+        """Clean up when session ends."""
+        try:
+            summary = usage_collector.get_summary()
+            logger.info(f"Session usage summary: {summary}")
+
+            if tracer and tracer.enabled:
+                tracer.end_conversation(
+                    outcome="completed",
+                    metadata={"usage_summary": str(summary)},
+                )
+        except Exception as e:
+            logger.warning(f"Langfuse shutdown failed: {e}")
+
+    ctx.add_shutdown_callback(on_shutdown)
 
     # Start the session
     await session.start(agent=agent, room=ctx.room)
