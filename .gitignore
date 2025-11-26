@@ -47,6 +47,7 @@ logs/
 *.temp
 *.bak
 *.backup
+temp/
 
 # Test coverage
 .coverage
@@ -73,6 +74,9 @@ docs/out/
 # MoAI reports (임시 보고서만 무시)
 .moai/reports/*.tmp
 .moai/reports/*-draft.*
+
+# WorkspaceSettings
+Nora-Livekit.code-workspace
 
 # Environment variables and deployment secrets
 .env

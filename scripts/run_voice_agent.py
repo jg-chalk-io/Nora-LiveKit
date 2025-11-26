@@ -48,14 +48,10 @@ import livekit.plugins.cartesia as cartesia
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
 
-# Turn detector - DO NOT prewarm (causes context errors), create in entrypoint instead
-USE_TURN_DETECTOR = os.getenv("USE_TURN_DETECTOR", "true").lower() == "true"
-
-
-def _get_turn_detector():
-    """Create turn detector at runtime (cannot be prewarmed)."""
-    from livekit.plugins.turn_detector.english import EnglishModel
-    return EnglishModel()
+# Turn detector - DISABLED due to HuggingFace download issues in Railway
+# The plugin can't download model files at runtime in containerized environments
+# TODO: Re-enable once LiveKit fixes the download mechanism
+USE_TURN_DETECTOR = False  # Hardcoded off - doesn't work in Railway
 
 # Load environment variables
 load_dotenv()
