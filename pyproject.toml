@@ -34,6 +34,11 @@ openai = ">=1.54.0"
 anthropic = ">=0.39.0"
 tenacity = ">=9.0.0"
 
+# HuggingFace dependencies for Turn Detector model
+transformers = ">=4.40.0,<4.50.0"
+huggingface-hub = ">=0.23.0"
+onnxruntime = ">=1.17.0"
+
 [tool.poetry.group.dev.dependencies]
 # Testing
 pytest = ">=8.3.0"

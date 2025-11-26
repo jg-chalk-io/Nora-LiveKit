@@ -48,10 +48,25 @@ import livekit.plugins.cartesia as cartesia
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
 
-# Turn detector - DISABLED due to HuggingFace download issues in Railway
-# The plugin can't download model files at runtime in containerized environments
-# TODO: Re-enable once LiveKit fixes the download mechanism
-USE_TURN_DETECTOR = False  # Hardcoded off - doesn't work in Railway
+# Turn detector - ENABLED with pre-downloaded models
+# Models are downloaded during Docker build (see scripts/download_models.py)
+# EnglishModel() is created at runtime in entrypoint (requires job context)
+USE_TURN_DETECTOR = True
+
+
+def _get_turn_detector():
+    """Create turn detector instance at runtime.
+
+    NOTE: This must be called within a job context (inside entrypoint),
+    not during prewarm, because EnglishModel() requires job context.
+
+    The model files are pre-downloaded during Docker build, so this
+    loads from cache without network access.
+    """
+    from livekit.plugins.turn_detector import EOUModel
+    # EOUModel is the main turn detector class in livekit-plugins-turn-detector
+    # It uses the English model by default for end-of-utterance prediction
+    return EOUModel()
 
 # Load environment variables
 load_dotenv()

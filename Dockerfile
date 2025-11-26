@@ -11,6 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     # Model cache directories - consistent for build and runtime
     HF_HOME=/app/.cache/huggingface \
+    HF_HUB_CACHE=/app/.cache/huggingface/hub \
     TORCH_HOME=/app/.cache/torch \
     XDG_CACHE_HOME=/app/.cache \
     HOME=/app
@@ -27,13 +28,19 @@ RUN useradd --home-dir /app --shell /bin/bash agent
 WORKDIR /app
 
 # Create cache directories early (owned by root initially)
-RUN mkdir -p /app/.cache/huggingface /app/.cache/torch /app/temp /app/scripts
+RUN mkdir -p /app/.cache/huggingface/hub /app/.cache/torch /app/temp /app/scripts
 
 # Copy requirements first for better caching
 COPY pyproject.toml ./
 
 # Install Python dependencies (CACHED - only rebuilds if pyproject.toml changes)
+# IMPORTANT: Install transformers/huggingface-hub FIRST with pinned versions
+# to avoid "Unrecognized model" errors with the turn detector
 RUN pip install --upgrade pip && \
+    pip install \
+    transformers==4.45.2 \
+    huggingface-hub==0.26.0 \
+    onnxruntime==1.19.0 && \
     pip install \
     livekit-agents==1.3.5 \
     livekit-plugins-deepgram==1.3.5 \
@@ -48,6 +55,7 @@ RUN pip install --upgrade pip && \
 COPY scripts/download_models.py ./scripts/download_models.py
 
 # Download ML models (CACHED - only rebuilds if download script changes)
+# This downloads both VAD and Turn Detector models
 RUN python scripts/download_models.py
 
 # Copy application code LAST (changes most frequently)
