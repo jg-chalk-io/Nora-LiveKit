@@ -56,6 +56,9 @@ USE_TURN_DETECTOR = True
 # Load environment variables
 load_dotenv()
 
+# Langfuse observability
+from nora_livekit.observability import init_langfuse, get_tracer
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nora-agent")
@@ -72,6 +75,19 @@ OFFICE_PHONE = os.getenv("OFFICE_PHONE", "4165550198")
 
 # Clinic open status - could be dynamic based on time, or set via env
 IS_CLINIC_OPEN = os.getenv("IS_CLINIC_OPEN", "false").lower() == "true"
+
+# =============================================================================
+# CARTESIA VOICE CONFIGURATION
+# Browse voices at: https://play.cartesia.ai/
+# =============================================================================
+# Popular Cartesia voice IDs:
+#   - 79a125e8-cd45-4c13-8a67-188112f4dd22  (Default - warm female)
+#   - a0e99841-07ec-4d8a-9de8-21bb41899c04  (British Female - professional)
+#   - 5345cf08-6f37-424d-a5d9-8ae1f1e5d5a4  (American Female - friendly)
+#   - 87748186-23bb-4158-a1eb-332911b0b708  (American Male - calm)
+#   - 41534e16-2966-4c6b-9670-111411def906  (British Male - authoritative)
+CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID", "79a125e8-cd45-4c13-8a67-188112f4dd22")
+CARTESIA_SPEED = float(os.getenv("CARTESIA_SPEED", "1.0"))  # 0.5 to 2.0
 
 
 def _load_nora_prompt() -> str:
@@ -149,6 +165,15 @@ def prewarm(proc: JobProcess):
     # Preload Nora system prompt
     logger.info("  Loading Nora system prompt...")
     proc.userdata["nora_prompt"] = _load_nora_prompt()
+
+    # Initialize Langfuse observability
+    logger.info("  Initializing Langfuse observability...")
+    tracer = init_langfuse()
+    proc.userdata["langfuse_enabled"] = tracer.enabled
+    if tracer.enabled:
+        logger.info("  ✓ Langfuse enabled")
+    else:
+        logger.info("  ○ Langfuse disabled (no API keys)")
 
     logger.info("Models prewarmed successfully!")
 
@@ -231,6 +256,27 @@ async def entrypoint(ctx: JobContext):
     await ctx.connect()
     logger.info(f"Connected to room: {ctx.room.name}")
 
+    # Start Langfuse conversation trace
+    tracer = get_tracer()
+    if tracer and tracer.enabled:
+        # Get caller identity from room participant if available
+        caller_phone = ""
+        for participant in ctx.room.remote_participants.values():
+            caller_phone = participant.identity or ""
+            break
+
+        tracer.start_conversation(
+            caller_phone=caller_phone,
+            office_name=OFFICE_NAME,
+            metadata={
+                "room_name": ctx.room.name,
+                "is_clinic_open": IS_CLINIC_OPEN,
+                "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
+                "voice_id": CARTESIA_VOICE_ID[:8],
+            },
+        )
+        logger.info("Langfuse trace started")
+
     # Get prewarmed Nora prompt
     nora_prompt = ctx.proc.userdata.get("nora_prompt", _get_fallback_prompt())
 
@@ -261,9 +307,10 @@ async def entrypoint(ctx: JobContext):
             temperature=0.7,
         ),
 
-        # TTS - Cartesia Sonic
+        # TTS - Cartesia Sonic (configurable voice)
         tts=cartesia.TTS(
-            voice="79a125e8-cd45-4c13-8a67-188112f4dd22",
+            voice=CARTESIA_VOICE_ID,
+            speed=CARTESIA_SPEED,
         ),
 
         # Turn detection - English model
@@ -327,9 +374,18 @@ def main():
     print("\nVoice Pipeline:")
     print(f"  STT: Deepgram Nova-3")
     print(f"  LLM: {os.getenv('LLM_MODEL', 'gpt-4o-mini')}")
-    print(f"  TTS: Cartesia Sonic")
+    print(f"  TTS: Cartesia Sonic (voice: {CARTESIA_VOICE_ID[:8]}..., speed: {CARTESIA_SPEED})")
     print(f"  VAD: Silero (prewarmed)")
     print(f"  Turn Detection: {'Enabled' if USE_TURN_DETECTOR else 'Disabled'}")
+
+    # Check Langfuse configuration
+    langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
+    print("\nObservability:")
+    if langfuse_enabled:
+        print(f"  Langfuse: ✓ Enabled")
+        print(f"    Host: {os.getenv('LANGFUSE_HOST', 'https://cloud.langfuse.com')}")
+    else:
+        print("  Langfuse: ○ Disabled (set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY)")
 
     print("\nNora Tools:")
     print("  ✓ transferFromAiTriageWithMetadata")

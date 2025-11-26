@@ -1,7 +1,7 @@
 {
-  "branch": "",
-  "last_commit": "",
-  "commit_time": "",
-  "changes": 0,
-  "last_check": "2025-11-24T10:03:19.121670"
+  "branch": "feature/SPEC-LIVEKIT-003",
+  "last_commit": "cb1bbd5 fix(voice): Import turn detector at module level BEFORE Worker.__init__",
+  "commit_time": "3 minutes ago",
+  "changes": 3,
+  "last_check": "2025-11-26T15:36:53.976514"
 }

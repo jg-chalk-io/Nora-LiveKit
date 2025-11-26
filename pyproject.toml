@@ -7,7 +7,7 @@ readme = "README.md"
 packages = [{include = "nora_livekit", from = "src"}]
 
 [tool.poetry.dependencies]
-python = "^3.12"
+python = ">=3.12,<3.14"
 
 # LiveKit Core
 livekit = ">=1.0.19"
@@ -38,6 +38,7 @@ tenacity = ">=9.0.0"
 transformers = ">=4.40.0,<4.50.0"
 huggingface-hub = ">=0.23.0"
 onnxruntime = ">=1.17.0"
+langfuse = "^3.10.1"
 
 [tool.poetry.group.dev.dependencies]
 # Testing
@@ -53,9 +54,6 @@ respx = ">=0.21.0"
 black = ">=24.10.0"
 ruff = ">=0.1.0"
 mypy = ">=1.7.0"
-
-# Type Stubs
-types-python-dotenv = ">=1.0.0"
 
 [tool.poetry.scripts]
 nora-agent = "nora_livekit.__main__:main"
