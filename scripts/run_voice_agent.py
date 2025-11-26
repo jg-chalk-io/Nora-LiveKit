@@ -48,6 +48,11 @@ import livekit.plugins.cartesia as cartesia
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
 
+# CRITICAL: Import turn detector at MODULE LEVEL to register inference runner
+# BEFORE Worker.__init__ is called. This must happen before cli.run_app().
+# The import triggers _InferenceRunner.register_runner(_EUORunnerEn)
+from livekit.plugins.turn_detector.english import EnglishModel  # noqa: F401
+
 # Turn detector - ENABLED with pre-downloaded models
 # Models are downloaded during Docker build (see scripts/download_models.py)
 # EnglishModel() is created at runtime in entrypoint (requires job context)
@@ -81,21 +86,14 @@ def prewarm(proc: JobProcess):
     This function is called ONCE when the worker process starts, before any
     rooms are joined. Preloading models here saves ~200-400ms on first response.
 
-    CRITICAL: Turn detector module MUST be imported here to register the
-    inference runner BEFORE the worker starts. This enables the inference
-    executor to be created.
+    NOTE: Turn detector is already imported at module level (before Worker.__init__)
+    to ensure the inference runner is registered and executor is created.
     """
     logger.info("Prewarming models...")
 
     # Preload VAD model (Silero) - saves ~100-200ms
     logger.info("  Loading Silero VAD...")
     proc.userdata["vad"] = silero.VAD.load()
-
-    # CRITICAL: Import turn detector to register inference runner
-    # This must happen during prewarm so the inference executor is created
-    # The actual EnglishModel() instantiation happens in entrypoint
-    logger.info("  Registering turn detector inference runner...")
-    from livekit.plugins.turn_detector.english import EnglishModel  # noqa: F401
 
     logger.info("Models prewarmed successfully!")
 
