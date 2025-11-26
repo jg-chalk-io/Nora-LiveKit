@@ -1,9 +1,9 @@
 ---
 id: SPEC-LIVEKIT-003
-version: 0.1.0
-status: draft
+version: 0.2.0
+status: completed
 created: 2025-11-24
-updated: 2025-11-24
+updated: 2025-11-25
 author: GOOS
 priority: P0
 ---
@@ -15,6 +15,7 @@ priority: P0
 | Version | Date       | Author | Changes                                    |
 |---------|------------|--------|--------------------------------------------|
 | 0.1.0   | 2025-11-24 | GOOS   | Initial draft - conversation engine SPEC  |
+| 0.2.0   | 2025-11-25 | GOOS   | Implementation complete, documentation synced |
 
 ---
 
