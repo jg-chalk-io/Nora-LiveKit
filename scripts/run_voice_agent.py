@@ -48,10 +48,14 @@ import livekit.plugins.cartesia as cartesia
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
 
-# Turn detector is optional - can cause issues in constrained environments
-USE_TURN_DETECTOR = os.getenv("USE_TURN_DETECTOR", "false").lower() == "true"
-if USE_TURN_DETECTOR:
+# Turn detector - DO NOT prewarm (causes context errors), create in entrypoint instead
+USE_TURN_DETECTOR = os.getenv("USE_TURN_DETECTOR", "true").lower() == "true"
+
+
+def _get_turn_detector():
+    """Create turn detector at runtime (cannot be prewarmed)."""
     from livekit.plugins.turn_detector.english import EnglishModel
+    return EnglishModel()
 
 # Load environment variables
 load_dotenv()
@@ -66,21 +70,16 @@ def prewarm(proc: JobProcess):
 
     This function is called ONCE when the worker process starts, before any
     rooms are joined. Preloading models here saves ~200-400ms on first response.
+
+    NOTE: Only VAD can be prewarmed. Turn detector must be created in entrypoint
+    (it requires job context that doesn't exist during prewarm).
     """
-    logger.info("Prewarming models for low-latency responses...")
+    logger.info("Prewarming VAD model...")
 
     # Preload VAD model (Silero) - saves ~100-200ms
     proc.userdata["vad"] = silero.VAD.load()
 
-    # Preload turn detector model - saves ~50-100ms (optional)
-    if USE_TURN_DETECTOR:
-        proc.userdata["turn_detector"] = EnglishModel()
-        logger.info("Turn detector loaded")
-    else:
-        proc.userdata["turn_detector"] = None
-        logger.info("Turn detector disabled (set USE_TURN_DETECTOR=true to enable)")
-
-    logger.info("Models prewarmed successfully!")
+    logger.info("VAD model prewarmed successfully!")
 
 
 # Optional: Define custom tools for the agent
@@ -170,9 +169,9 @@ Remember: You're having a voice conversation, so avoid long lists or complex exp
         # TURN DETECTION - English Model (~10ms inference)
         # Predicts when user finished speaking BEFORE silence timeout
         # This is the #1 latency optimization (saves 200-500ms)
-        # NOTE: Disabled by default, enable with USE_TURN_DETECTOR=true
+        # NOTE: Created here (not prewarmed) - requires job context
         # =====================================================
-        turn_detection=ctx.proc.userdata["turn_detector"] if USE_TURN_DETECTOR else None,
+        turn_detection=_get_turn_detector() if USE_TURN_DETECTOR else None,
 
         # =====================================================
         # ENDPOINTING DELAYS - Tuned for responsiveness
@@ -249,9 +248,9 @@ def main():
     print(f"  OpenAI: ✓ gpt-4o-mini")
 
     print("\nLatency Optimizations:")
-    print("  ✓ Model prewarming (VAD)")
+    print("  ✓ VAD prewarming (Silero)")
     if USE_TURN_DETECTOR:
-        print("  ✓ English turn detection (~10ms inference)")
+        print("  ✓ Turn detection (English model, created at runtime)")
     else:
         print("  ○ Turn detector DISABLED (set USE_TURN_DETECTOR=true to enable)")
     print("  ✓ Preemptive generation (parallel pipeline)")
