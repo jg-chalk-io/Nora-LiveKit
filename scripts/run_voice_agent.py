@@ -63,10 +63,9 @@ def _get_turn_detector():
     The model files are pre-downloaded during Docker build, so this
     loads from cache without network access.
     """
-    from livekit.plugins.turn_detector import EOUModel
-    # EOUModel is the main turn detector class in livekit-plugins-turn-detector
-    # It uses the English model by default for end-of-utterance prediction
-    return EOUModel()
+    from livekit.plugins.turn_detector.english import EnglishModel
+    # EnglishModel predicts end-of-utterance ~200-500ms faster than VAD alone
+    return EnglishModel()
 
 # Load environment variables
 load_dotenv()
