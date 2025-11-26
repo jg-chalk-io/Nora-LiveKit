@@ -39,10 +39,13 @@ RUN pip install --upgrade pip && \
 # Copy application code
 COPY src/ ./src/
 
-# Copy scripts for model download
+# Copy scripts
 RUN mkdir -p ./scripts
 COPY scripts/run_voice_agent.py ./scripts/run_voice_agent.py
 
+# Download ML models during build (turn detector, silero VAD)
+# This is required for the turn detector to work at runtime
+RUN python scripts/run_voice_agent.py download-files
 
 # Set ownership to non-root user
 RUN chown -R agent:agent /app
