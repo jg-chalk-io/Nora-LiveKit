@@ -81,15 +81,23 @@ def prewarm(proc: JobProcess):
     This function is called ONCE when the worker process starts, before any
     rooms are joined. Preloading models here saves ~200-400ms on first response.
 
-    NOTE: Only VAD can be prewarmed. Turn detector must be created in entrypoint
-    (it requires job context that doesn't exist during prewarm).
+    CRITICAL: Turn detector module MUST be imported here to register the
+    inference runner BEFORE the worker starts. This enables the inference
+    executor to be created.
     """
-    logger.info("Prewarming VAD model...")
+    logger.info("Prewarming models...")
 
     # Preload VAD model (Silero) - saves ~100-200ms
+    logger.info("  Loading Silero VAD...")
     proc.userdata["vad"] = silero.VAD.load()
 
-    logger.info("VAD model prewarmed successfully!")
+    # CRITICAL: Import turn detector to register inference runner
+    # This must happen during prewarm so the inference executor is created
+    # The actual EnglishModel() instantiation happens in entrypoint
+    logger.info("  Registering turn detector inference runner...")
+    from livekit.plugins.turn_detector.english import EnglishModel  # noqa: F401
+
+    logger.info("Models prewarmed successfully!")
 
 
 # Optional: Define custom tools for the agent
