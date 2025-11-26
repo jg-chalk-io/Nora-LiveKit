@@ -41,6 +41,7 @@ RUN pip install --upgrade pip && \
     livekit-plugins-openai==1.3.5 \
     livekit-plugins-silero==1.3.5 \
     livekit-plugins-turn-detector==1.3.5 \
+    huggingface_hub \
     python-dotenv \
     structlog
 
