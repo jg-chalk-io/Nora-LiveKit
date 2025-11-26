@@ -39,9 +39,10 @@ RUN pip install --upgrade pip && \
 # Copy application code
 COPY src/ ./src/
 
-# Copy scripts directory (create if needed)
+# Copy scripts for model download
 RUN mkdir -p ./scripts
 COPY scripts/run_voice_agent.py ./scripts/run_voice_agent.py
+
 
 # Set ownership to non-root user
 RUN chown -R agent:agent /app

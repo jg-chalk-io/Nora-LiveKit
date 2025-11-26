@@ -47,7 +47,11 @@ import livekit.plugins.deepgram as deepgram
 import livekit.plugins.cartesia as cartesia
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
-from livekit.plugins.turn_detector.english import EnglishModel
+
+# Turn detector is optional - can cause issues in constrained environments
+USE_TURN_DETECTOR = os.getenv("USE_TURN_DETECTOR", "false").lower() == "true"
+if USE_TURN_DETECTOR:
+    from livekit.plugins.turn_detector.english import EnglishModel
 
 # Load environment variables
 load_dotenv()
@@ -68,8 +72,13 @@ def prewarm(proc: JobProcess):
     # Preload VAD model (Silero) - saves ~100-200ms
     proc.userdata["vad"] = silero.VAD.load()
 
-    # Preload turn detector model - saves ~50-100ms
-    proc.userdata["turn_detector"] = EnglishModel()
+    # Preload turn detector model - saves ~50-100ms (optional)
+    if USE_TURN_DETECTOR:
+        proc.userdata["turn_detector"] = EnglishModel()
+        logger.info("Turn detector loaded")
+    else:
+        proc.userdata["turn_detector"] = None
+        logger.info("Turn detector disabled (set USE_TURN_DETECTOR=true to enable)")
 
     logger.info("Models prewarmed successfully!")
 
@@ -161,8 +170,9 @@ Remember: You're having a voice conversation, so avoid long lists or complex exp
         # TURN DETECTION - English Model (~10ms inference)
         # Predicts when user finished speaking BEFORE silence timeout
         # This is the #1 latency optimization (saves 200-500ms)
+        # NOTE: Disabled by default, enable with USE_TURN_DETECTOR=true
         # =====================================================
-        turn_detection=ctx.proc.userdata["turn_detector"],
+        turn_detection=ctx.proc.userdata["turn_detector"] if USE_TURN_DETECTOR else None,
 
         # =====================================================
         # ENDPOINTING DELAYS - Tuned for responsiveness
@@ -239,8 +249,11 @@ def main():
     print(f"  OpenAI: ✓ gpt-4o-mini")
 
     print("\nLatency Optimizations:")
-    print("  ✓ Model prewarming (VAD + Turn Detector)")
-    print("  ✓ English turn detection (~10ms inference)")
+    print("  ✓ Model prewarming (VAD)")
+    if USE_TURN_DETECTOR:
+        print("  ✓ English turn detection (~10ms inference)")
+    else:
+        print("  ○ Turn detector DISABLED (set USE_TURN_DETECTOR=true to enable)")
     print("  ✓ Preemptive generation (parallel pipeline)")
     print("  ✓ Tuned endpointing (0.3s min, 1.5s max)")
     print("  ✓ Interruption handling enabled")
@@ -251,11 +264,16 @@ def main():
     print("Configure your LiveKit credentials and connect!")
     print("-" * 60 + "\n")
 
-    # Run the agent with prewarming
+    # Run the agent with resource-optimized settings for Railway
+    # Railway has limited resources - we minimize process usage
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,  # Prewarm models on worker startup
+            # CRITICAL: Railway resource optimization
+            # Default is min(cpu_count, 4) which overwhelms Railway's Hobby plan
+            num_idle_processes=1,  # Only 1 idle process (default: 4 in prod)
+            job_memory_warn_mb=300,  # Lower memory warning threshold
         ),
     )
 
