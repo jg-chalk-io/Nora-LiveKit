@@ -1,0 +1,139 @@
+[tool.poetry]
+name = "nora-livekit"
+version = "0.1.0"
+description = "Nora LiveKit Voice Agent - Real-time voice interaction with Deepgram STT and Cartesia TTS"
+authors = ["GOOS <goos@example.com>"]
+readme = "README.md"
+packages = [{include = "nora_livekit", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+
+# LiveKit Core
+livekit = ">=1.0.19"
+livekit-agents = ">=1.0.23"
+livekit-api = ">=1.0.7"
+
+# Voice Pipeline Plugins
+livekit-plugins-deepgram = ">=1.0.23"
+livekit-plugins-cartesia = ">=1.0.23"
+livekit-plugins-turn-detector = ">=1.0.23"
+
+# Configuration and Logging
+python-dotenv = ">=1.0.1"
+structlog = ">=24.4.0"
+
+# Web Framework for Health Checks
+fastapi = ">=0.115.0"
+uvicorn = {extras = ["standard"], version = ">=0.32.0"}
+
+# LLM Integration (SPEC-LIVEKIT-003)
+openai = ">=1.54.0"
+anthropic = ">=0.39.0"
+tenacity = ">=9.0.0"
+
+[tool.poetry.group.dev.dependencies]
+# Testing
+pytest = ">=8.3.0"
+pytest-asyncio = ">=0.24.0"
+pytest-cov = ">=6.0.0"
+pytest-timeout = ">=2.3.0"
+pytest-benchmark = ">=5.1.0"
+pytest-mock = ">=3.14.0"
+respx = ">=0.21.0"
+
+# Code Quality
+black = ">=24.10.0"
+ruff = ">=0.1.0"
+mypy = ">=1.7.0"
+
+# Type Stubs
+types-python-dotenv = ">=1.0.0"
+
+[tool.poetry.scripts]
+nora-agent = "nora_livekit.__main__:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=nora_livekit",
+    "--cov-report=term-missing",
+    "--cov-report=json",
+    "--cov-report=html",
+]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["src/nora_livekit"]
+omit = [
+    "*/tests/*",
+    "*/__main__.py",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if TYPE_CHECKING:",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+include = '\.pyi?$'
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by black)
+    "B008",  # do not perform function calls in argument defaults
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]  # Unused imports in __init__.py
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "livekit.*",
+    "cartesia.*",
+    "deepgram.*",
+]
+ignore_missing_imports = true
