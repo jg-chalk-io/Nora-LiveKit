@@ -1,10 +1,10 @@
 ---
 id: SPEC-LIVEKIT-002
 version: 1.0.0
-status: pending
+status: completed
 created: 2025-11-24
-updated: 2025-11-24
-completed_at: null
+updated: 2025-11-25
+completed_at: 2025-11-25
 author: @user
 priority: P0
 domain: VOICE

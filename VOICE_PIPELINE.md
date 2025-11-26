@@ -6,6 +6,12 @@ This document describes the implementation of the voice pipeline for Nora LiveKi
 
 **Implementation Status**: COMPLETE (89% test coverage, 81 tests passing)
 
+**Related Documentation**:
+- [README.md](README.md) - Project overview and quick start
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System design and architecture
+- [docs/API_REFERENCE.md](docs/API_REFERENCE.md) - Complete API documentation
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) - Common issues and solutions
+
 ## Architecture
 
 ```
