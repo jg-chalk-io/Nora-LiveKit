@@ -148,7 +148,22 @@ def prewarm(proc: JobProcess):
 
 # =============================================================================
 # ROUTING FUNCTION TOOLS - These trigger prompt phase transitions
+# Uses session.update_agent() to properly switch agent instructions
 # =============================================================================
+
+def _get_all_tools():
+    """Get all tools for creating new agents."""
+    return [
+        route_to_urgent_transfer,
+        route_to_message_flow,
+        route_to_critical_emergency,
+        transferFromAiTriageWithMetadata,
+        collectNameNumberConcernPetName,
+        hangUp,
+        queryCorpus,
+    ]
+
+
 @function_tool
 async def route_to_urgent_transfer(
     context: RunContext,
@@ -160,7 +175,7 @@ async def route_to_urgent_transfer(
     """Route to urgent transfer flow when pet needs immediate assistance.
 
     Call this when the caller confirms their pet needs immediate help.
-    This will load the specialized urgent transfer prompt.
+    This will switch to the specialized urgent transfer agent.
     """
     global _prompt_manager, _current_session
 
@@ -173,7 +188,7 @@ async def route_to_urgent_transfer(
         }
     )
 
-    if _prompt_manager:
+    if _prompt_manager and _current_session:
         new_prompt = _prompt_manager.transition_to(
             PromptPhase.URGENT_TRANSFER,
             context_updates={
@@ -185,10 +200,13 @@ async def route_to_urgent_transfer(
             },
         )
 
-        # Update agent instructions
-        if _current_session and _current_session.agent:
-            _current_session.agent.instructions = new_prompt
-            logger.info(f"Switched to URGENT_TRANSFER prompt (~{len(new_prompt)//4} tokens)")
+        # Create new agent with urgent transfer prompt and switch to it
+        new_agent = Agent(
+            instructions=new_prompt,
+            tools=_get_all_tools(),
+        )
+        _current_session.update_agent(new_agent)
+        logger.info(f"AGENT SWITCHED to URGENT_TRANSFER (~{len(new_prompt)//4} tokens)")
 
     return "Switched to urgent transfer flow. Continue with data collection."
 
@@ -217,7 +235,7 @@ async def route_to_message_flow(
         }
     )
 
-    if _prompt_manager:
+    if _prompt_manager and _current_session:
         new_prompt = _prompt_manager.transition_to(
             PromptPhase.MESSAGE_FLOW,
             context_updates={
@@ -229,9 +247,13 @@ async def route_to_message_flow(
             },
         )
 
-        if _current_session and _current_session.agent:
-            _current_session.agent.instructions = new_prompt
-            logger.info(f"Switched to MESSAGE_FLOW prompt (~{len(new_prompt)//4} tokens)")
+        # Create new agent with message flow prompt and switch to it
+        new_agent = Agent(
+            instructions=new_prompt,
+            tools=_get_all_tools(),
+        )
+        _current_session.update_agent(new_agent)
+        logger.info(f"AGENT SWITCHED to MESSAGE_FLOW (~{len(new_prompt)//4} tokens)")
 
     return "Switched to message flow. Continue with data collection."
 
@@ -265,7 +287,7 @@ async def route_to_critical_emergency(
         }
     )
 
-    if _prompt_manager:
+    if _prompt_manager and _current_session:
         new_prompt = _prompt_manager.transition_to(
             PromptPhase.CRITICAL_EMERGENCY,
             context_updates={
@@ -277,9 +299,13 @@ async def route_to_critical_emergency(
             },
         )
 
-        if _current_session and _current_session.agent:
-            _current_session.agent.instructions = new_prompt
-            logger.info(f"Switched to CRITICAL_EMERGENCY prompt (~{len(new_prompt)//4} tokens)")
+        # Create new agent with critical emergency prompt and switch to it
+        new_agent = Agent(
+            instructions=new_prompt,
+            tools=_get_all_tools(),
+        )
+        _current_session.update_agent(new_agent)
+        logger.info(f"AGENT SWITCHED to CRITICAL_EMERGENCY (~{len(new_prompt)//4} tokens)")
 
     return "CRITICAL EMERGENCY - Switched to minimal collection flow. Get phone + name only, then transfer immediately."
 
@@ -436,17 +462,7 @@ async def entrypoint(ctx: JobContext):
     # Create the Nora agent with Phase 1 prompt
     agent = Agent(
         instructions=greeter_prompt,
-        tools=[
-            # Routing tools (trigger prompt switches)
-            route_to_urgent_transfer,
-            route_to_message_flow,
-            route_to_critical_emergency,
-            # Business logic tools
-            transferFromAiTriageWithMetadata,
-            collectNameNumberConcernPetName,
-            hangUp,
-            queryCorpus,
-        ],
+        tools=_get_all_tools(),
     )
 
     # Create the agent session with latency optimizations
