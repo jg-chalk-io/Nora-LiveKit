@@ -24,7 +24,7 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY pyproject.toml ./
 
-# Install Python dependencies
+# Install Python dependencies (with latency optimizations)
 RUN pip install --upgrade pip && \
     pip install \
     livekit-agents==1.3.5 \
@@ -32,6 +32,7 @@ RUN pip install --upgrade pip && \
     livekit-plugins-cartesia==1.3.5 \
     livekit-plugins-openai==1.3.5 \
     livekit-plugins-silero==1.3.5 \
+    livekit-plugins-turn-detector==1.3.5 \
     python-dotenv \
     structlog
 

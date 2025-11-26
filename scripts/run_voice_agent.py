@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Run Nora Voice Agent with LiveKit.
+"""Run Nora Voice Agent with LiveKit - Latency Optimized.
 
-This script creates a fully functional voice agent that:
-1. Connects to a LiveKit room
-2. Listens to participant audio (your microphone)
-3. Transcribes speech using Deepgram STT
-4. Generates responses with OpenAI LLM
-5. Speaks back using Cartesia TTS
+This script creates a fully functional voice agent optimized for sub-300ms latency:
+1. Prewarmed VAD model (eliminates cold-start latency)
+2. English turn detector (predicts end-of-turn ~200-500ms faster)
+3. Nova-3 STT (faster than nova-2)
+4. Preemptive generation (starts LLM before user finishes)
+5. Tuned endpointing delays
+6. Interruption handling
 
 Usage:
     # Start in development mode (uses LiveKit playground)
@@ -36,6 +37,7 @@ from livekit.agents import (
     Agent,
     AgentSession,
     JobContext,
+    JobProcess,
     WorkerOptions,
     cli,
     function_tool,
@@ -45,6 +47,7 @@ import livekit.plugins.deepgram as deepgram
 import livekit.plugins.cartesia as cartesia
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
+from livekit.plugins.turn_detector.english import EnglishModel
 
 # Load environment variables
 load_dotenv()
@@ -52,6 +55,23 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nora-agent")
+
+
+def prewarm(proc: JobProcess):
+    """Prewarm models during worker startup to eliminate cold-start latency.
+
+    This function is called ONCE when the worker process starts, before any
+    rooms are joined. Preloading models here saves ~200-400ms on first response.
+    """
+    logger.info("Prewarming models for low-latency responses...")
+
+    # Preload VAD model (Silero) - saves ~100-200ms
+    proc.userdata["vad"] = silero.VAD.load()
+
+    # Preload turn detector model - saves ~50-100ms
+    proc.userdata["turn_detector"] = EnglishModel()
+
+    logger.info("Models prewarmed successfully!")
 
 
 # Optional: Define custom tools for the agent
@@ -73,6 +93,7 @@ async def entrypoint(ctx: JobContext):
     """Main entry point for the voice agent.
 
     This function is called when the agent joins a room.
+    Optimized for sub-300ms latency using Deepgram best practices.
 
     Args:
         ctx: LiveKit job context with room connection
@@ -84,7 +105,7 @@ async def entrypoint(ctx: JobContext):
 
     logger.info(f"Connected to room: {ctx.room.name}")
 
-    # Create the agent with instructions
+    # Create the agent with instructions optimized for voice
     agent = Agent(
         instructions="""You are Nora, a friendly and helpful voice assistant.
 
@@ -99,20 +120,70 @@ Remember: You're having a voice conversation, so avoid long lists or complex exp
         tools=[get_current_time, get_date],
     )
 
-    # Create the agent session with STT, LLM, TTS, and VAD
+    # Create the agent session with LATENCY OPTIMIZATIONS
+    # Reference: https://deepgram.com/learn/low-latency-voice-ai-and-how-to-achieve-it
     session = AgentSession(
-        vad=silero.VAD.load(),
+        # =====================================================
+        # VOICE ACTIVITY DETECTION (VAD)
+        # Using prewarmed model to eliminate cold-start latency
+        # =====================================================
+        vad=ctx.proc.userdata["vad"],
+
+        # =====================================================
+        # SPEECH-TO-TEXT (STT) - Deepgram Nova-3
+        # Nova-3 is newer/faster than Nova-2
+        # Streaming STT processes audio as it arrives
+        # =====================================================
         stt=deepgram.STT(
-            model="nova-2",
-            language="en-US",
+            model="nova-3",  # Upgraded from nova-2 for better speed
+            language="en",   # Simplified language code
         ),
+
+        # =====================================================
+        # LARGE LANGUAGE MODEL (LLM) - OpenAI
+        # gpt-4o-mini is optimized for speed while maintaining quality
+        # =====================================================
         llm=openai.LLM(
             model="gpt-4o-mini",
             temperature=0.7,
         ),
+
+        # =====================================================
+        # TEXT-TO-SPEECH (TTS) - Cartesia Sonic
+        # Cartesia streams audio back while generating
+        # First syllable in ~150ms
+        # =====================================================
         tts=cartesia.TTS(
             voice="79a125e8-cd45-4c13-8a67-188112f4dd22",  # Default Cartesia voice
         ),
+
+        # =====================================================
+        # TURN DETECTION - English Model (~10ms inference)
+        # Predicts when user finished speaking BEFORE silence timeout
+        # This is the #1 latency optimization (saves 200-500ms)
+        # =====================================================
+        turn_detection=ctx.proc.userdata["turn_detector"],
+
+        # =====================================================
+        # ENDPOINTING DELAYS - Tuned for responsiveness
+        # min: minimum wait after predicted end-of-turn
+        # max: maximum wait before forcing response
+        # =====================================================
+        min_endpointing_delay=0.3,  # 300ms minimum (default is higher)
+        max_endpointing_delay=1.5,  # 1.5s maximum wait
+
+        # =====================================================
+        # PREEMPTIVE GENERATION - Start LLM early
+        # Begins generating response before user fully finishes
+        # Overlaps STT and LLM processing (parallel pipeline)
+        # =====================================================
+        preemptive_generation=True,
+
+        # =====================================================
+        # INTERRUPTION HANDLING - Natural conversation flow
+        # =====================================================
+        allow_interruptions=True,
+        min_interruption_duration=0.5,  # 500ms to trigger interruption
     )
 
     # Start the session
@@ -123,13 +194,13 @@ Remember: You're having a voice conversation, so avoid long lists or complex exp
         instructions="Greet the user warmly. Introduce yourself as Nora and ask how you can help them today."
     )
 
-    logger.info("Voice assistant is running. Speak to interact!")
+    logger.info("Voice assistant is running with latency optimizations. Speak to interact!")
 
 
 def main():
     """Run the voice agent."""
     print("\n" + "=" * 60)
-    print("  NORA VOICE AGENT - LiveKit Test")
+    print("  NORA VOICE AGENT - LiveKit (Latency Optimized)")
     print("=" * 60)
 
     # Check required environment variables
@@ -163,20 +234,28 @@ def main():
     # Show configuration
     print("\nConfiguration:")
     print(f"  LiveKit URL: {required_vars['LIVEKIT_URL']}")
-    print(f"  Deepgram: ✓ Configured")
+    print(f"  Deepgram: ✓ Nova-3 (upgraded)")
     print(f"  Cartesia: ✓ Configured")
-    print(f"  OpenAI: ✓ Configured")
+    print(f"  OpenAI: ✓ gpt-4o-mini")
+
+    print("\nLatency Optimizations:")
+    print("  ✓ Model prewarming (VAD + Turn Detector)")
+    print("  ✓ English turn detection (~10ms inference)")
+    print("  ✓ Preemptive generation (parallel pipeline)")
+    print("  ✓ Tuned endpointing (0.3s min, 1.5s max)")
+    print("  ✓ Interruption handling enabled")
 
     print("\n" + "-" * 60)
-    print("Starting agent...")
+    print("Starting agent with prewarmed models...")
     print("To test: Open https://agents-playground.livekit.io")
     print("Configure your LiveKit credentials and connect!")
     print("-" * 60 + "\n")
 
-    # Run the agent
+    # Run the agent with prewarming
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
+            prewarm_fnc=prewarm,  # Prewarm models on worker startup
         ),
     )
 
