@@ -8,7 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONFAULTHANDLER=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # Model cache directories
+    HF_HOME=/app/.cache/huggingface \
+    TORCH_HOME=/app/.cache/torch \
+    XDG_CACHE_HOME=/app/.cache
 
 # Install system dependencies for audio processing
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,6 +47,9 @@ COPY src/ ./src/
 RUN mkdir -p ./scripts
 COPY scripts/run_voice_agent.py ./scripts/run_voice_agent.py
 COPY scripts/download_models.py ./scripts/download_models.py
+
+# Create cache directories for model downloads
+RUN mkdir -p /app/.cache/huggingface /app/.cache/torch /app/temp
 
 # Download ML models during build (turn detector, silero VAD)
 # This is required for the turn detector to work at runtime
