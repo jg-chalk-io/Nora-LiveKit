@@ -6,16 +6,17 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# Start command (overrides Dockerfile CMD if needed)
+# Start command
 startCommand = "python scripts/run_voice_agent.py start"
 
-# Health check configuration
-healthcheckPath = "/"
-healthcheckTimeout = 300
+# IMPORTANT: LiveKit agents are workers, not web servers
+# They connect outbound to LiveKit Cloud via WebSocket
+# No HTTP health check needed - Railway monitors process health
+healthcheckPath = ""
 
 # Restart policy
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
 
-# Resource allocation (Railway Hobby plan)
+# Resource allocation
 numReplicas = 1
