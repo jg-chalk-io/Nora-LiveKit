@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Run Nora Voice Agent with LiveKit - Latency Optimized.
+"""Run Nora Voice Agent with LiveKit - Full Nora Veterinary Assistant.
 
-This script creates a fully functional voice agent optimized for sub-300ms latency:
-1. Prewarmed VAD model (eliminates cold-start latency)
-2. English turn detector (predicts end-of-turn ~200-500ms faster)
-3. Nova-3 STT (faster than nova-2)
-4. Preemptive generation (starts LLM before user finishes)
-5. Tuned endpointing delays
-6. Interruption handling
+This script creates Nora, the veterinary virtual assistant with:
+1. Full nora.md system prompt (1180 lines of behavior rules)
+2. Latency-optimized voice pipeline (sub-300ms target)
+3. Proper tools (transferFromAiTriageWithMetadata, collectNameNumberConcernPetName)
+4. Office configuration (name, hours, address, etc.)
 
 Usage:
     # Start in development mode (uses LiveKit playground)
@@ -50,27 +48,10 @@ import livekit.plugins.openai as openai
 
 # CRITICAL: Import turn detector at MODULE LEVEL to register inference runner
 # BEFORE Worker.__init__ is called. This must happen before cli.run_app().
-# The import triggers _InferenceRunner.register_runner(_EUORunnerEn)
 from livekit.plugins.turn_detector.english import EnglishModel  # noqa: F401
 
 # Turn detector - ENABLED with pre-downloaded models
-# Models are downloaded during Docker build (see scripts/download_models.py)
-# EnglishModel() is created at runtime in entrypoint (requires job context)
 USE_TURN_DETECTOR = True
-
-
-def _get_turn_detector():
-    """Create turn detector instance at runtime.
-
-    NOTE: This must be called within a job context (inside entrypoint),
-    not during prewarm, because EnglishModel() requires job context.
-
-    The model files are pre-downloaded during Docker build, so this
-    loads from cache without network access.
-    """
-    from livekit.plugins.turn_detector.english import EnglishModel
-    # EnglishModel predicts end-of-utterance ~200-500ms faster than VAD alone
-    return EnglishModel()
 
 # Load environment variables
 load_dotenv()
@@ -80,152 +61,240 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nora-agent")
 
 
+# =============================================================================
+# NORA CONFIGURATION - Customize these for your veterinary clinic
+# =============================================================================
+OFFICE_NAME = os.getenv("OFFICE_NAME", "Humber Veterinary Clinic")
+OFFICE_HOURS = os.getenv("OFFICE_HOURS", "Monday–Friday 8 AM–6 PM, Saturday 9 AM–2 PM")
+OFFICE_ADDRESS = os.getenv("OFFICE_ADDRESS", "123 Humber Valley Blvd, Toronto, ON")
+OFFICE_WEBSITE = os.getenv("OFFICE_WEBSITE", "https://humberveterinary.com")
+OFFICE_PHONE = os.getenv("OFFICE_PHONE", "4165550198")
+
+# Clinic open status - could be dynamic based on time, or set via env
+IS_CLINIC_OPEN = os.getenv("IS_CLINIC_OPEN", "false").lower() == "true"
+
+
+def _load_nora_prompt() -> str:
+    """Load and render the Nora system prompt from nora_system.md."""
+    prompt_path = Path(__file__).parent.parent / "src" / "nora_livekit" / "prompts" / "nora_system.md"
+
+    try:
+        template = prompt_path.read_text()
+    except FileNotFoundError:
+        logger.warning(f"Nora prompt not found at {prompt_path}, using fallback")
+        return _get_fallback_prompt()
+
+    # Replace template variables
+    prompt = template.replace("{{office_name}}", OFFICE_NAME)
+    prompt = prompt.replace("{{is_the_clinic_open}}", "yes" if IS_CLINIC_OPEN else "no")
+    prompt = prompt.replace("{{office_hours}}", OFFICE_HOURS)
+    prompt = prompt.replace("{{hospital_address}}", OFFICE_ADDRESS)
+    prompt = prompt.replace("{{office_website}}", OFFICE_WEBSITE)
+    prompt = prompt.replace("{{office_phone}}", OFFICE_PHONE)
+
+    # Caller phone will be dynamic per call, use placeholder
+    prompt = prompt.replace("{{caller_phone_digits}}", "unknown")
+    prompt = prompt.replace("{{caller_phone_number}}", "unknown")
+
+    logger.info(f"Loaded Nora prompt ({len(template)} chars) for {OFFICE_NAME}")
+    return prompt
+
+
+def _get_fallback_prompt() -> str:
+    """Minimal fallback prompt if main prompt fails to load."""
+    return f"""You are Nora, the virtual assistant for {OFFICE_NAME}.
+
+CRITICAL RULES:
+1. Ask ONE question at a time and STOP after the question mark
+2. Never ask for multiple pieces of information in a single question
+3. If silence for 5 seconds, say "Are you still there?"
+4. Never provide medical advice - transfer to Vet Wise instead
+
+The clinic is currently {'open' if IS_CLINIC_OPEN else 'closed'}.
+Hours: {OFFICE_HOURS}
+Address: {OFFICE_ADDRESS}
+"""
+
+
+def _get_nora_greeting() -> str:
+    """Get the proper Nora greeting based on clinic status."""
+    if IS_CLINIC_OPEN:
+        return (
+            f"Thank you for calling {OFFICE_NAME}. "
+            "We're currently open but assisting other callers. "
+            "I'm Nora, the virtual assistant. How can I help you today?"
+        )
+    else:
+        return (
+            f"Thank you for calling {OFFICE_NAME}. "
+            "The office is currently closed, but I'm Nora, "
+            "the virtual assistant here to help. How can I assist you?"
+        )
+
+
+def _get_turn_detector():
+    """Create turn detector instance at runtime."""
+    from livekit.plugins.turn_detector.english import EnglishModel
+    return EnglishModel()
+
+
 def prewarm(proc: JobProcess):
-    """Prewarm models during worker startup to eliminate cold-start latency.
-
-    This function is called ONCE when the worker process starts, before any
-    rooms are joined. Preloading models here saves ~200-400ms on first response.
-
-    NOTE: Turn detector is already imported at module level (before Worker.__init__)
-    to ensure the inference runner is registered and executor is created.
-    """
+    """Prewarm models during worker startup."""
     logger.info("Prewarming models...")
 
-    # Preload VAD model (Silero) - saves ~100-200ms
+    # Preload VAD model (Silero)
     logger.info("  Loading Silero VAD...")
     proc.userdata["vad"] = silero.VAD.load()
+
+    # Preload Nora system prompt
+    logger.info("  Loading Nora system prompt...")
+    proc.userdata["nora_prompt"] = _load_nora_prompt()
 
     logger.info("Models prewarmed successfully!")
 
 
-# Optional: Define custom tools for the agent
+# =============================================================================
+# NORA TOOLS - These match the exact signatures from nora.md
+# =============================================================================
 @function_tool
-async def get_current_time(context: RunContext) -> str:
-    """Get the current time."""
-    from datetime import datetime
-    return f"The current time is {datetime.now().strftime('%I:%M %p')}"
+async def transferFromAiTriageWithMetadata(
+    context: RunContext,
+    callback_number: str,
+    first_name: str,
+    last_name: str = "",
+    pet_name: str = "",
+    age: str = "",
+    species: str = "",
+    breed: str = "",
+    urgency_reason: str = "",
+) -> str:
+    """Transfer to Vet Wise with full metadata.
+
+    Use this when the caller needs immediate live assistance from a
+    registered veterinary technician.
+    """
+    logger.info(
+        "TRANSFER TRIGGERED",
+        extra={
+            "callback_number": callback_number,
+            "first_name": first_name,
+            "last_name": last_name,
+            "pet_name": pet_name,
+            "urgency_reason": urgency_reason,
+        }
+    )
+    # In production: trigger SIP transfer, webhook, etc.
+    return "Transferred to Vet Wise"
 
 
 @function_tool
-async def get_date(context: RunContext) -> str:
-    """Get today's date."""
-    from datetime import datetime
-    return f"Today is {datetime.now().strftime('%A, %B %d, %Y')}"
+async def collectNameNumberConcernPetName(
+    context: RunContext,
+    callback_number: str,
+    first_name: str,
+    last_name: str = "",
+    pet_name: str = "",
+    concern_description: str = "",
+) -> str:
+    """Save non-urgent message for office callback.
+
+    Use this when the caller's request can wait for office staff
+    to return the call.
+    """
+    logger.info(
+        "MESSAGE SAVED",
+        extra={
+            "callback_number": callback_number,
+            "first_name": first_name,
+            "last_name": last_name,
+            "pet_name": pet_name,
+            "concern_description": concern_description,
+        }
+    )
+    # In production: save to CRM, trigger notification, etc.
+    return "Message saved"
+
+
+@function_tool
+async def hangUp(context: RunContext) -> str:
+    """End the call."""
+    logger.info("HANGUP TRIGGERED")
+    # In production: trigger call termination
+    return "Call ended"
 
 
 async def entrypoint(ctx: JobContext):
-    """Main entry point for the voice agent.
-
-    This function is called when the agent joins a room.
-    Optimized for sub-300ms latency using Deepgram best practices.
-
-    Args:
-        ctx: LiveKit job context with room connection
-    """
-    logger.info(f"Agent starting, waiting for room connection...")
+    """Main entry point for the Nora voice agent."""
+    logger.info("Nora agent starting...")
 
     # Connect to the room
     await ctx.connect()
-
     logger.info(f"Connected to room: {ctx.room.name}")
 
-    # Create the agent with instructions optimized for voice
+    # Get prewarmed Nora prompt
+    nora_prompt = ctx.proc.userdata.get("nora_prompt", _get_fallback_prompt())
+
+    # Create the Nora agent with full system prompt
     agent = Agent(
-        instructions="""You are Nora, a friendly and helpful voice assistant.
-
-Key behaviors:
-- Keep responses brief and conversational (1-2 sentences when possible)
-- Speak naturally as if having a phone conversation
-- Be warm and personable
-- If asked about your capabilities, mention you can help with general questions, tell the time and date
-- If you don't know something, be honest about it
-
-Remember: You're having a voice conversation, so avoid long lists or complex explanations.""",
-        tools=[get_current_time, get_date],
+        instructions=nora_prompt,
+        tools=[
+            transferFromAiTriageWithMetadata,
+            collectNameNumberConcernPetName,
+            hangUp,
+        ],
     )
 
-    # Create the agent session with LATENCY OPTIMIZATIONS
-    # Reference: https://deepgram.com/learn/low-latency-voice-ai-and-how-to-achieve-it
+    # Create the agent session with latency optimizations
     session = AgentSession(
-        # =====================================================
-        # VOICE ACTIVITY DETECTION (VAD)
-        # Using prewarmed model to eliminate cold-start latency
-        # =====================================================
+        # VAD - prewarmed
         vad=ctx.proc.userdata["vad"],
 
-        # =====================================================
-        # SPEECH-TO-TEXT (STT) - Deepgram Nova-3
-        # Nova-3 is newer/faster than Nova-2
-        # Streaming STT processes audio as it arrives
-        # =====================================================
+        # STT - Deepgram Nova-3
         stt=deepgram.STT(
-            model="nova-3",  # Upgraded from nova-2 for better speed
-            language="en",   # Simplified language code
+            model="nova-3",
+            language="en",
         ),
 
-        # =====================================================
-        # LARGE LANGUAGE MODEL (LLM) - OpenAI
-        # gpt-4o-mini is optimized for speed while maintaining quality
-        # =====================================================
+        # LLM - OpenAI (gpt-4o-mini for speed, gpt-4o for quality)
         llm=openai.LLM(
-            model="gpt-4o-mini",
+            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
             temperature=0.7,
         ),
 
-        # =====================================================
-        # TEXT-TO-SPEECH (TTS) - Cartesia Sonic
-        # Cartesia streams audio back while generating
-        # First syllable in ~150ms
-        # =====================================================
+        # TTS - Cartesia Sonic
         tts=cartesia.TTS(
-            voice="79a125e8-cd45-4c13-8a67-188112f4dd22",  # Default Cartesia voice
+            voice="79a125e8-cd45-4c13-8a67-188112f4dd22",
         ),
 
-        # =====================================================
-        # TURN DETECTION - English Model (~10ms inference)
-        # Predicts when user finished speaking BEFORE silence timeout
-        # This is the #1 latency optimization (saves 200-500ms)
-        # NOTE: Created here (not prewarmed) - requires job context
-        # =====================================================
+        # Turn detection - English model
         turn_detection=_get_turn_detector() if USE_TURN_DETECTOR else None,
 
-        # =====================================================
-        # ENDPOINTING DELAYS - Tuned for responsiveness
-        # min: minimum wait after predicted end-of-turn
-        # max: maximum wait before forcing response
-        # =====================================================
-        min_endpointing_delay=0.3,  # 300ms minimum (default is higher)
-        max_endpointing_delay=1.5,  # 1.5s maximum wait
+        # Endpointing delays
+        min_endpointing_delay=0.3,
+        max_endpointing_delay=1.5,
 
-        # =====================================================
-        # PREEMPTIVE GENERATION - Start LLM early
-        # Begins generating response before user fully finishes
-        # Overlaps STT and LLM processing (parallel pipeline)
-        # =====================================================
+        # Enable preemptive generation
         preemptive_generation=True,
 
-        # =====================================================
-        # INTERRUPTION HANDLING - Natural conversation flow
-        # =====================================================
+        # Interruption handling
         allow_interruptions=True,
-        min_interruption_duration=0.5,  # 500ms to trigger interruption
+        min_interruption_duration=0.5,
     )
 
     # Start the session
     await session.start(agent=agent, room=ctx.room)
 
-    # Generate initial greeting
-    await session.generate_reply(
-        instructions="Greet the user warmly. Introduce yourself as Nora and ask how you can help them today."
-    )
+    # Generate the proper Nora greeting
+    greeting = _get_nora_greeting()
+    await session.generate_reply(instructions=f"Say exactly this: {greeting}")
 
-    logger.info("Voice assistant is running with latency optimizations. Speak to interact!")
+    logger.info(f"Nora is running for {OFFICE_NAME}. Clinic open: {IS_CLINIC_OPEN}")
 
 
 def main():
-    """Run the voice agent."""
+    """Run the Nora voice agent."""
     print("\n" + "=" * 60)
-    print("  NORA VOICE AGENT - LiveKit (Latency Optimized)")
+    print("  NORA VETERINARY ASSISTANT - LiveKit")
     print("=" * 60)
 
     # Check required environment variables
@@ -245,50 +314,40 @@ def main():
         for var in missing:
             print(f"  - {var}")
         print("\nPlease set these in your .env file.")
-        print("\nExample .env file:")
-        print("-" * 40)
-        print("LIVEKIT_URL=wss://your-project.livekit.cloud")
-        print("LIVEKIT_API_KEY=your_api_key")
-        print("LIVEKIT_API_SECRET=your_api_secret")
-        print("DEEPGRAM_API_KEY=your_deepgram_key")
-        print("CARTESIA_API_KEY=your_cartesia_key")
-        print("OPENAI_API_KEY=your_openai_key")
-        print("-" * 40)
         sys.exit(1)
 
-    # Show configuration
-    print("\nConfiguration:")
-    print(f"  LiveKit URL: {required_vars['LIVEKIT_URL']}")
-    print(f"  Deepgram: ✓ Nova-3 (upgraded)")
-    print(f"  Cartesia: ✓ Configured")
-    print(f"  OpenAI: ✓ gpt-4o-mini")
+    # Show Nora configuration
+    print(f"\nOffice Configuration:")
+    print(f"  Name: {OFFICE_NAME}")
+    print(f"  Hours: {OFFICE_HOURS}")
+    print(f"  Address: {OFFICE_ADDRESS}")
+    print(f"  Phone: {OFFICE_PHONE}")
+    print(f"  Currently Open: {'YES' if IS_CLINIC_OPEN else 'NO'}")
 
-    print("\nLatency Optimizations:")
-    print("  ✓ VAD prewarming (Silero)")
-    if USE_TURN_DETECTOR:
-        print("  ✓ Turn detection (English model, created at runtime)")
-    else:
-        print("  ○ Turn detector DISABLED (set USE_TURN_DETECTOR=true to enable)")
-    print("  ✓ Preemptive generation (parallel pipeline)")
-    print("  ✓ Tuned endpointing (0.3s min, 1.5s max)")
-    print("  ✓ Interruption handling enabled")
+    print("\nVoice Pipeline:")
+    print(f"  STT: Deepgram Nova-3")
+    print(f"  LLM: {os.getenv('LLM_MODEL', 'gpt-4o-mini')}")
+    print(f"  TTS: Cartesia Sonic")
+    print(f"  VAD: Silero (prewarmed)")
+    print(f"  Turn Detection: {'Enabled' if USE_TURN_DETECTOR else 'Disabled'}")
+
+    print("\nNora Tools:")
+    print("  ✓ transferFromAiTriageWithMetadata")
+    print("  ✓ collectNameNumberConcernPetName")
+    print("  ✓ hangUp")
 
     print("\n" + "-" * 60)
-    print("Starting agent with prewarmed models...")
+    print("Starting Nora with full veterinary assistant prompt...")
     print("To test: Open https://agents-playground.livekit.io")
-    print("Configure your LiveKit credentials and connect!")
     print("-" * 60 + "\n")
 
-    # Run the agent with resource-optimized settings for Railway
-    # Railway has limited resources - we minimize process usage
+    # Run the agent
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
-            prewarm_fnc=prewarm,  # Prewarm models on worker startup
-            # CRITICAL: Railway resource optimization
-            # Default is min(cpu_count, 4) which overwhelms Railway's Hobby plan
-            num_idle_processes=1,  # Only 1 idle process (default: 4 in prod)
-            job_memory_warn_mb=300,  # Lower memory warning threshold
+            prewarm_fnc=prewarm,
+            num_idle_processes=1,
+            job_memory_warn_mb=300,
         ),
     )
 
