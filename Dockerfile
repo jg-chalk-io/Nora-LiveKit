@@ -42,10 +42,11 @@ COPY src/ ./src/
 # Copy scripts
 RUN mkdir -p ./scripts
 COPY scripts/run_voice_agent.py ./scripts/run_voice_agent.py
+COPY scripts/download_models.py ./scripts/download_models.py
 
 # Download ML models during build (turn detector, silero VAD)
 # This is required for the turn detector to work at runtime
-RUN python scripts/run_voice_agent.py download-files
+RUN python scripts/download_models.py
 
 # Set ownership to non-root user
 RUN chown -R agent:agent /app
