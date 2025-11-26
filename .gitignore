@@ -75,7 +75,10 @@ docs/out/
 .moai/reports/*-draft.*
 
 # Environment variables and deployment secrets
-.env*
+.env
+.env.local
+.env.*.local
+!.env.example
 .vercel/
 .netlify/
 .firebase/

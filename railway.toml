@@ -1,0 +1,21 @@
+# Railway deployment configuration for Nora Voice Agent
+# https://docs.railway.app/reference/config-as-code
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Start command (overrides Dockerfile CMD if needed)
+startCommand = "python scripts/run_voice_agent.py start"
+
+# Health check configuration
+healthcheckPath = "/"
+healthcheckTimeout = 300
+
+# Restart policy
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# Resource allocation (Railway Hobby plan)
+numReplicas = 1
