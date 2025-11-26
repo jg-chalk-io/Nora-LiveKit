@@ -49,7 +49,9 @@ RUN pip install --upgrade pip && \
     livekit-plugins-silero==1.3.5 \
     livekit-plugins-turn-detector==1.3.5 \
     python-dotenv \
-    structlog
+    structlog \
+    langfuse \
+    pydantic
 
 # Copy model download script (separate layer for caching)
 COPY scripts/download_models.py ./scripts/download_models.py
