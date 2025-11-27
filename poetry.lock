@@ -1543,6 +1543,7 @@ eval-type-backport = "*"
 livekit = ">=1.0.19,<2"
 livekit-api = ">=1.0.7,<2"
 livekit-blingfire = ">=1.0,<2.0"
+livekit-plugins-openai = {version = ">=1.3.5", optional = true, markers = "extra == \"openai\""}
 livekit-protocol = ">=1.1,<2"
 nest-asyncio = ">=1.6.0"
 numpy = ">=1.26.0"
@@ -1662,20 +1663,6 @@ files = [
 ]
 
 [[package]]
-name = "livekit-plugins-cartesia"
-version = "1.3.5"
-description = "LiveKit Agents Plugin for Cartesia"
-optional = false
-python-versions = ">=3.9.0"
-files = [
-    {file = "livekit_plugins_cartesia-1.3.5-py3-none-any.whl", hash = "sha256:e50213691dbcd077c716a42daa561bfffb2ca08fc80e082cf34fca3f3eb70f0e"},
-    {file = "livekit_plugins_cartesia-1.3.5.tar.gz", hash = "sha256:d818120ed79971e47dd384ecb9ee6f4416bd4bfd4c88e01965895a778198656f"},
-]
-
-[package.dependencies]
-livekit-agents = ">=1.3.5"
-
-[[package]]
 name = "livekit-plugins-deepgram"
 version = "1.3.5"
 description = "Agent Framework plugin for services using Deepgram's API."
@@ -1689,6 +1676,22 @@ files = [
 [package.dependencies]
 livekit-agents = {version = ">=1.3.5", extras = ["codecs"]}
 numpy = ">=1.26"
+
+[[package]]
+name = "livekit-plugins-groq"
+version = "1.3.5"
+description = "Groq inference plugin for LiveKit Agents"
+optional = true
+python-versions = ">=3.9.0"
+files = [
+    {file = "livekit_plugins_groq-1.3.5-py3-none-any.whl", hash = "sha256:718cf3dd29589154d28ee18340ea672db95558e52e34bd78350d71cffb03df03"},
+    {file = "livekit_plugins_groq-1.3.5.tar.gz", hash = "sha256:827ba4474805f0ce616222dbc3c4e76bef7a1c85c47e4fae3d61b4253ee124a0"},
+]
+
+[package.dependencies]
+aiohttp = "*"
+livekit = "*"
+livekit-agents = {version = ">=1.3.5", extras = ["codecs", "openai"]}
 
 [[package]]
 name = "livekit-plugins-openai"
@@ -1741,6 +1744,20 @@ livekit-agents = ">=1.3.5"
 numpy = ">=1.26"
 onnxruntime = ">=1.18"
 transformers = ">=4.47.1,<=4.57.1"
+
+[[package]]
+name = "livekit-plugins-ultravox"
+version = "1.3.5"
+description = "Agent Framework plugin for services from Ultravox"
+optional = true
+python-versions = ">=3.9.0"
+files = [
+    {file = "livekit_plugins_ultravox-1.3.5-py3-none-any.whl", hash = "sha256:07df7b527d2db48a1c505dd492b84262a326a64af5d88851c0a496a802722fd8"},
+    {file = "livekit_plugins_ultravox-1.3.5.tar.gz", hash = "sha256:fba28101919b74cde8c5d32d506818751dcb3d2fa89089c2f62642b777e823b7"},
+]
+
+[package.dependencies]
+livekit-agents = {version = ">=1.3.5", extras = ["codecs"]}
 
 [[package]]
 name = "livekit-protocol"
@@ -4308,7 +4325,12 @@ enabler = ["pytest-enabler (>=2.2)"]
 test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_itertools", "pytest (>=6,!=8.1.*)", "pytest-ignore-flaky"]
 type = ["pytest-mypy"]
 
+[extras]
+all-llm = ["livekit-plugins-groq", "livekit-plugins-ultravox"]
+groq = ["livekit-plugins-groq"]
+ultravox = ["livekit-plugins-ultravox"]
+
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "1294ead9ce376e87fbb57558941fce3c4c91a430c2a46dd697ebe78eb18245ca"
+content-hash = "3cb9c7603df04c9a6ed8cb625ab72d06317da331f57b6f116eaa6abcbedddc6f"
