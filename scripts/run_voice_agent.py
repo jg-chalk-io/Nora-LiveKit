@@ -274,8 +274,18 @@ class NoraAgent(Agent):
 # Uses session.update_agent() to properly switch agent instructions
 # =============================================================================
 
-def _get_all_tools():
-    """Get all tools for creating new agents."""
+def _get_greeter_tools():
+    """Get tools for Phase 1 greeter - ONLY routing tools, no data collection."""
+    return [
+        route_to_urgent_transfer,
+        route_to_message_flow,
+        route_to_critical_emergency,
+        queryCorpus,
+    ]
+
+
+def _get_phase2_tools():
+    """Get tools for Phase 2 flows - includes data collection and transfer."""
     return [
         route_to_urgent_transfer,
         route_to_message_flow,
@@ -285,6 +295,11 @@ def _get_all_tools():
         hangUp,
         queryCorpus,
     ]
+
+
+def _get_all_tools():
+    """Get all tools - DEPRECATED, use phase-specific functions."""
+    return _get_phase2_tools()
 
 
 @function_tool
@@ -324,9 +339,10 @@ async def route_to_urgent_transfer(
         )
 
         # Create new agent with urgent transfer prompt and switch to it
+        # Phase 2: Gets full tools including data collection
         new_agent = NoraAgent(
             instructions=new_prompt,
-            tools=_get_all_tools(),
+            tools=_get_phase2_tools(),
         )
         _current_session.update_agent(new_agent)
         logger.info(f"AGENT SWITCHED to URGENT_TRANSFER (~{len(new_prompt)//4} tokens)")
@@ -372,9 +388,10 @@ async def route_to_message_flow(
         )
 
         # Create new agent with message flow prompt and switch to it
+        # Phase 2: Gets full tools including data collection
         new_agent = NoraAgent(
             instructions=new_prompt,
-            tools=_get_all_tools(),
+            tools=_get_phase2_tools(),
         )
         _current_session.update_agent(new_agent)
         logger.info(f"AGENT SWITCHED to MESSAGE_FLOW (~{len(new_prompt)//4} tokens)")
@@ -425,9 +442,10 @@ async def route_to_critical_emergency(
         )
 
         # Create new agent with critical emergency prompt and switch to it
+        # Phase 2C: Gets full tools including transfer and hangup
         new_agent = NoraAgent(
             instructions=new_prompt,
-            tools=_get_all_tools(),
+            tools=_get_phase2_tools(),
         )
         _current_session.update_agent(new_agent)
         logger.info(f"AGENT SWITCHED to CRITICAL_EMERGENCY (~{len(new_prompt)//4} tokens)")
@@ -592,9 +610,11 @@ async def entrypoint(ctx: JobContext):
         logger.warning(f"Langfuse tracing failed (non-fatal): {e}")
 
     # Create the Nora agent with Phase 1 prompt (using NoraAgent for speech tracking)
+    # Phase 1: Greeter only gets routing tools - NO data collection tools
+    # This prevents the LLM from hallucinating data collection before greeting
     agent = NoraAgent(
         instructions=greeter_prompt,
-        tools=_get_all_tools(),
+        tools=_get_greeter_tools(),
     )
 
     # Create the agent session based on provider mode
