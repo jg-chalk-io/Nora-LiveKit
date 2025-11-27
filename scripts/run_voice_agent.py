@@ -162,10 +162,10 @@ def _get_llm():
     if provider == "ultravox":
         if not ULTRAVOX_AVAILABLE:
             logger.warning("Ultravox plugin not installed, falling back to OpenAI")
-            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7)
         if not os.getenv("ULTRAVOX_API_KEY"):
             logger.warning("ULTRAVOX_API_KEY not set, falling back to OpenAI")
-            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7)
         logger.info(f"Using Ultravox realtime model with voice: {ULTRAVOX_VOICE}")
         # Ultravox is a realtime model - handles STT+LLM+TTS in one connection
         return ultravox.realtime.RealtimeModel(voice=ULTRAVOX_VOICE)
@@ -173,17 +173,18 @@ def _get_llm():
     elif provider == "groq":
         if not GROQ_AVAILABLE:
             logger.warning("Groq plugin not installed, falling back to OpenAI")
-            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7)
         if not os.getenv("GROQ_API_KEY"):
             logger.warning("GROQ_API_KEY not set, falling back to OpenAI")
-            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7)
         # Groq models: llama-3.3-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768
         groq_model = model if model.startswith("llama") or model.startswith("mixtral") else "llama-3.1-8b-instant"
         logger.info(f"Using Groq with model: {groq_model}")
         return groq.LLM(model=groq_model, temperature=0.7)
 
     else:  # Default: openai
-        return openai.LLM(model=model, temperature=0.7, max_tokens=max_tokens)
+        # Note: livekit-plugins-openai LLM doesn't support max_tokens parameter
+        return openai.LLM(model=model, temperature=0.7)
 
 
 def _get_turn_detector():
