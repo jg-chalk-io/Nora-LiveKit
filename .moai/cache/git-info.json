@@ -1,7 +1,7 @@
 {
   "branch": "feature/SPEC-LIVEKIT-003",
-  "last_commit": "0f57ac1 fix: Resolve STT params and Langfuse v3 API compatibility",
-  "commit_time": "10 minutes ago",
-  "changes": 3,
-  "last_check": "2025-11-26T22:56:18.040273"
+  "last_commit": "95e3aa5 fix(deps): Make anthropic import optional in llm.py",
+  "commit_time": "3 minutes ago",
+  "changes": 2,
+  "last_check": "2025-11-27T16:38:05.231410"
 }

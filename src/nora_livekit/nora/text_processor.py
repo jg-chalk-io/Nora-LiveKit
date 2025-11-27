@@ -290,8 +290,10 @@ class NoraTextProcessor:
 
         original = text
 
-        # Pattern 1: <function=name>{"args"} format (Groq's common output)
-        # Matches: <function=route_to_message_flow>{"caller_phone":"416-555-5678"...}
+        # Pattern 1: <function=name>...</function> XML-style format (Groq's common output)
+        # Matches: <function=route_to_urgent_transfer>{"caller_phone":"..."}</function>
+        # Also matches without closing tag: <function=route_to_message_flow>{"caller_phone":"..."}
+        text = re.sub(r'<function=[^>]+>.*?</function>', '', text, flags=re.DOTALL)
         text = re.sub(r'<function=[^>]+>\s*\{[^}]*\}', '', text)
         text = re.sub(r'<function=[^>]+>[^\s]*', '', text)
 
