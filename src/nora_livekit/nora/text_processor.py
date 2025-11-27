@@ -345,6 +345,33 @@ class NoraTextProcessor:
                 removed_chars=len(original) - len(text),
             )
 
+        # CRITICAL: If sanitizing removed ALL content, the LLM only output function
+        # call syntax with no natural language. Provide a fallback so TTS has something.
+        if not text and original:
+            # Determine appropriate fallback based on what function was called
+            fallback = ""
+            original_lower = original.lower()
+
+            if "route_to_urgent_transfer" in original_lower or "transferfromaitriage" in original_lower:
+                fallback = "Let me connect you to our triage team right away."
+            elif "route_to_message_flow" in original_lower or "collectnamenumberconcern" in original_lower:
+                fallback = "I'll make sure to pass along your message."
+            elif "route_to_critical_emergency" in original_lower:
+                fallback = "I'm connecting you immediately for emergency assistance."
+            elif "hangup" in original_lower:
+                fallback = "Thank you for calling. Goodbye."
+            elif "querycorpus" in original_lower:
+                # Don't say anything for corpus queries - let next response handle it
+                fallback = ""
+
+            logger.warning(
+                "nora.text.sanitizer_fallback_used",
+                reason="LLM output contained only function call syntax",
+                original_len=len(original),
+                fallback_message=fallback[:50] if fallback else "none",
+            )
+            return fallback
+
         return text
 
     def process_for_tts(self, text: str, use_ssml: bool = True) -> str:
