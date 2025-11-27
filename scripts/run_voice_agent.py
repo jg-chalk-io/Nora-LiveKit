@@ -80,6 +80,9 @@ from nora_livekit.observability import init_langfuse, get_tracer
 # Phased prompt manager
 from nora_livekit.prompts import PromptManager, PromptPhase, get_prompt_manager
 
+# Sanitized TTS wrapper (removes function call syntax from LLM output)
+from nora_livekit.nora.sanitized_tts import wrap_tts
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nora-agent")
@@ -660,9 +663,10 @@ async def entrypoint(ctx: JobContext):
             # TTS - Deepgram Aura-2 (same provider as STT = reduced latency)
             # Benefits: No extra network hop, shared connection, ~50ms savings
             # Streaming is enabled by default - audio chunks sent as generated
-            tts=deepgram.TTS(
+            # WRAPPED with SanitizedTTS to remove function call syntax from LLM output
+            tts=wrap_tts(deepgram.TTS(
                 model=DEEPGRAM_TTS_VOICE,
-            ),
+            )),
 
             # Turn detection - English model
             turn_detection=_get_turn_detector() if USE_TURN_DETECTOR else None,
@@ -799,6 +803,7 @@ def main():
     print(f"  STT: Deepgram Nova-3")
     print(f"  LLM: {LLM_PROVIDER}/{LLM_MODEL} (max_tokens={LLM_MAX_TOKENS})")
     print(f"  TTS: Deepgram Aura-2 (voice: {DEEPGRAM_TTS_VOICE})")
+    print(f"  TTS Sanitizer: ✓ Enabled (removes function call syntax)")
     print(f"  Turn Detection: {'Enabled' if USE_TURN_DETECTOR else 'Disabled'}")
 
     # Show LLM provider availability

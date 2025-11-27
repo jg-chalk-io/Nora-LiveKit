@@ -266,13 +266,93 @@ class NoraTextProcessor:
 
         return False, None
 
+    def sanitize_function_calls(self, text: str) -> str:
+        """Remove function call syntax from LLM output.
+
+        Handles cases where LLM outputs function calls as text instead
+        of using proper tool_call format. This commonly happens with
+        smaller models like llama-3.1-8b.
+
+        Patterns removed:
+        - <function=name>{"args": "..."} format
+        - function_name(arg1="val1", ...) format
+        - SAY THIS: / SAY EXACTLY THIS: prefixes
+        - Code blocks containing function calls
+
+        Args:
+            text: LLM response that may contain function syntax
+
+        Returns:
+            Text with function call syntax removed
+        """
+        if not text:
+            return text
+
+        original = text
+
+        # Pattern 1: <function=name>{"args"} format (Groq's common output)
+        # Matches: <function=route_to_message_flow>{"caller_phone":"416-555-5678"...}
+        text = re.sub(r'<function=[^>]+>\s*\{[^}]*\}', '', text)
+        text = re.sub(r'<function=[^>]+>[^\s]*', '', text)
+
+        # Pattern 2: function_name(args) format
+        # Matches: transferFromAiTriageWithMetadata(callback_number="...", ...)
+        # Also matches: route_to_urgent_transfer(pet_name="Max", ...)
+        # Be careful not to match normal parenthetical text
+        function_names = [
+            'transferFromAiTriageWithMetadata',
+            'collectNameNumberConcernPetName',
+            'route_to_urgent_transfer',
+            'route_to_message_flow',
+            'route_to_critical_emergency',
+            'queryCorpus',
+            'hangUp',
+        ]
+        for func_name in function_names:
+            # Match function call with any content in parentheses (including newlines)
+            pattern = rf'{func_name}\s*\([^)]*\)'
+            text = re.sub(pattern, '', text, flags=re.DOTALL)
+            # Also match just the function name followed by open paren if args span lines
+            pattern_multiline = rf'{func_name}\s*\([\s\S]*?\)'
+            text = re.sub(pattern_multiline, '', text, flags=re.DOTALL)
+
+        # Pattern 3: Remove "SAY THIS:" or "SAY EXACTLY THIS:" prefixes
+        text = re.sub(r'SAY\s+(EXACTLY\s+)?THIS:\s*', '', text, flags=re.IGNORECASE)
+
+        # Pattern 4: Remove code blocks (triple backticks) - may contain function calls
+        text = re.sub(r'```[\s\S]*?```', '', text)
+
+        # Pattern 5: Remove inline code (single backticks)
+        text = re.sub(r'`[^`]+`', '', text)
+
+        # Pattern 6: Clean up JSON-like fragments that may remain
+        text = re.sub(r'\{[^}]*"callback_number"[^}]*\}', '', text)
+        text = re.sub(r'\{[^}]*"first_name"[^}]*\}', '', text)
+
+        # Clean up whitespace artifacts
+        text = re.sub(r'\n\s*\n', '\n', text)  # Multiple newlines
+        text = re.sub(r'\s+', ' ', text)  # Multiple spaces
+        text = text.strip()
+
+        # Log if we removed something
+        if text != original:
+            logger.info(
+                "nora.text.function_calls_sanitized",
+                original_len=len(original),
+                sanitized_len=len(text),
+                removed_chars=len(original) - len(text),
+            )
+
+        return text
+
     def process_for_tts(self, text: str, use_ssml: bool = True) -> str:
         """Full processing pipeline for TTS output.
 
         Applies all transformations in order:
-        1. Remove markdown
-        2. Enforce single question
-        3. Format phone numbers
+        1. Sanitize function calls (remove LLM function syntax artifacts)
+        2. Remove markdown
+        3. Enforce single question
+        4. Format phone numbers
 
         Args:
             text: Raw LLM response
@@ -281,6 +361,7 @@ class NoraTextProcessor:
         Returns:
             TTS-ready text
         """
+        text = self.sanitize_function_calls(text)
         text = self.remove_markdown(text)
         text, _ = self.enforce_single_question(text)
         text = self.format_phone_for_tts(text, use_ssml)
