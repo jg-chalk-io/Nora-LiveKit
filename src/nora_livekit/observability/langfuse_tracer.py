@@ -1,5 +1,7 @@
 """Langfuse tracer for Nora voice agent observability.
 
+Uses Langfuse SDK v3 (OTEL-based) API.
+
 Tracks:
 - LLM calls with latency, tokens, and cost
 - STT transcriptions with audio duration and word count
@@ -15,7 +17,7 @@ Environment Variables:
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import structlog
@@ -54,7 +56,7 @@ class ConversationMetrics:
 class NoraLangfuseTracer:
     """Langfuse tracer for comprehensive voice agent observability.
 
-    Uses Langfuse v3 API with context managers and proper span hierarchy.
+    Uses Langfuse SDK v3 API with manual span management.
     Integrates with LiveKit's metrics_collected events.
     """
 
@@ -87,13 +89,18 @@ class NoraLangfuseTracer:
             return
 
         try:
-            from langfuse import Langfuse
+            # Set environment variables for Langfuse SDK v3
+            if self.public_key:
+                os.environ["LANGFUSE_PUBLIC_KEY"] = self.public_key
+            if self.secret_key:
+                os.environ["LANGFUSE_SECRET_KEY"] = self.secret_key
+            if self.host:
+                os.environ["LANGFUSE_HOST"] = self.host
 
-            self.langfuse = Langfuse(
-                public_key=self.public_key,
-                secret_key=self.secret_key,
-                host=self.host,
-            )
+            # Import and get the v3 client
+            from langfuse import get_client
+
+            self.langfuse = get_client()
         except Exception as e:
             logger.warning("langfuse.init_failed", error=str(e))
             self.langfuse = None
@@ -101,7 +108,7 @@ class NoraLangfuseTracer:
             return
 
         self.session_id = session_id
-        self._current_trace: Optional[Any] = None
+        self._root_span: Optional[Any] = None
         self._metrics = ConversationMetrics()
 
         logger.info("langfuse.initialized", host=self.host, session_id=session_id)
@@ -114,13 +121,16 @@ class NoraLangfuseTracer:
     ) -> Optional[Any]:
         """Start a new conversation trace.
 
+        In Langfuse v3, traces are created implicitly by the first span.
+        We create a root span to represent the conversation.
+
         Args:
             caller_phone: Caller's phone number
             office_name: Office/clinic name
             metadata: Additional metadata
 
         Returns:
-            Trace object or None
+            Root span object or None
         """
         if not self.enabled or not self.langfuse:
             return None
@@ -135,12 +145,10 @@ class NoraLangfuseTracer:
                 **(metadata or {}),
             }
 
-            # Create trace using v3 API
-            self._current_trace = self.langfuse.trace(
+            # Create root span - this implicitly creates the trace in v3
+            self._root_span = self.langfuse.start_span(
                 name="nora-conversation",
-                session_id=self.session_id,
                 metadata=trace_metadata,
-                tags=["voice-agent", "nora", office_name] if office_name else ["voice-agent", "nora"],
             )
 
             # Reset metrics for new conversation
@@ -148,11 +156,10 @@ class NoraLangfuseTracer:
 
             logger.info(
                 "langfuse.conversation_started",
-                trace_id=self._current_trace.id if self._current_trace else None,
                 office_name=office_name,
             )
 
-            return self._current_trace
+            return self._root_span
         except Exception as e:
             logger.warning("langfuse.start_conversation_failed", error=str(e))
             return None
@@ -168,7 +175,7 @@ class NoraLangfuseTracer:
             outcome: Conversation outcome (completed, transferred, dropped, etc.)
             metadata: Additional metadata
         """
-        if not self._current_trace:
+        if not self._root_span:
             return
 
         try:
@@ -196,8 +203,9 @@ class NoraLangfuseTracer:
                 **(metadata or {}),
             }
 
-            # Update trace with final output
-            self._current_trace.update(output=summary)
+            # Update and end root span
+            self._root_span.update(output=summary)
+            self._root_span.end()
 
             # Flush to ensure all events are sent
             if self.langfuse:
@@ -205,14 +213,13 @@ class NoraLangfuseTracer:
 
             logger.info(
                 "langfuse.conversation_ended",
-                trace_id=self._current_trace.id,
                 outcome=outcome,
                 total_turns=self._metrics.total_turns,
             )
         except Exception as e:
             logger.warning("langfuse.end_conversation_failed", error=str(e))
 
-        self._current_trace = None
+        self._root_span = None
 
     def trace_metrics(self, metrics: Any) -> None:
         """Process LiveKit metrics_collected event and send to Langfuse.
@@ -223,7 +230,7 @@ class NoraLangfuseTracer:
         Args:
             metrics: LiveKit AgentMetrics object
         """
-        if not self._current_trace:
+        if not self._root_span:
             return
 
         try:
@@ -245,20 +252,23 @@ class NoraLangfuseTracer:
 
     def _trace_stt_metrics(self, metric: Any) -> None:
         """Trace STT (speech-to-text) metrics."""
+        if not self._root_span:
+            return
+
         try:
             duration_ms = getattr(metric, "duration", 0) * 1000
             audio_duration_ms = getattr(metric, "audio_duration", 0) * 1000
 
-            # Create span for STT
-            span = self._current_trace.span(
+            # Create child span for STT under root
+            span = self._root_span.start_span(
                 name="stt-transcription",
                 input={"audio_duration_ms": audio_duration_ms},
-                output={"transcript": getattr(metric, "transcript", "")},
                 metadata={
                     "duration_ms": duration_ms,
                     "streamed": getattr(metric, "streamed", False),
                 },
             )
+            span.update(output={"transcript": getattr(metric, "transcript", "")})
             span.end()
 
             # Accumulate metrics
@@ -275,27 +285,32 @@ class NoraLangfuseTracer:
 
     def _trace_llm_metrics(self, metric: Any) -> None:
         """Trace LLM (language model) metrics."""
+        if not self._root_span:
+            return
+
         try:
             ttft_ms = getattr(metric, "ttft", 0) * 1000  # Time to first token
             duration_ms = getattr(metric, "duration", 0) * 1000
             prompt_tokens = getattr(metric, "prompt_tokens", 0)
             completion_tokens = getattr(metric, "completion_tokens", 0)
 
-            # Create generation span for LLM
-            generation = self._current_trace.generation(
+            # Create generation span for LLM under root
+            generation = self._root_span.start_generation(
                 name="llm-generation",
                 model=getattr(metric, "model", "unknown"),
                 input={"request_id": getattr(metric, "request_id", "")},
+                metadata={
+                    "ttft_ms": ttft_ms,
+                    "duration_ms": duration_ms,
+                    "cancelled": getattr(metric, "cancelled", False),
+                },
+            )
+            generation.update(
                 output=getattr(metric, "content", ""),
                 usage={
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": prompt_tokens + completion_tokens,
-                },
-                metadata={
-                    "ttft_ms": ttft_ms,
-                    "duration_ms": duration_ms,
-                    "cancelled": getattr(metric, "cancelled", False),
                 },
             )
             generation.end()
@@ -317,16 +332,18 @@ class NoraLangfuseTracer:
 
     def _trace_tts_metrics(self, metric: Any) -> None:
         """Trace TTS (text-to-speech) metrics."""
+        if not self._root_span:
+            return
+
         try:
             ttfb_ms = getattr(metric, "ttfb", 0) * 1000  # Time to first byte
             duration_ms = getattr(metric, "duration", 0) * 1000
             characters = getattr(metric, "characters_count", 0)
 
-            # Create span for TTS
-            span = self._current_trace.span(
+            # Create span for TTS under root
+            span = self._root_span.start_span(
                 name="tts-synthesis",
                 input={"characters": characters},
-                output={"audio_duration_ms": getattr(metric, "audio_duration", 0) * 1000},
                 metadata={
                     "ttfb_ms": ttfb_ms,
                     "duration_ms": duration_ms,
@@ -334,6 +351,7 @@ class NoraLangfuseTracer:
                     "cancelled": getattr(metric, "cancelled", False),
                 },
             )
+            span.update(output={"audio_duration_ms": getattr(metric, "audio_duration", 0) * 1000})
             span.end()
 
             # Accumulate metrics
@@ -350,12 +368,15 @@ class NoraLangfuseTracer:
 
     def _trace_pipeline_metrics(self, metric: Any) -> None:
         """Trace end-to-end pipeline metrics."""
+        if not self._root_span:
+            return
+
         try:
             sequence_id = getattr(metric, "sequence_id", "")
             e2e_latency_ms = getattr(metric, "e2e_latency", 0) * 1000
 
-            # Create span for pipeline
-            span = self._current_trace.span(
+            # Create span for pipeline under root
+            span = self._root_span.start_span(
                 name="pipeline-turn",
                 input={"sequence_id": sequence_id},
                 metadata={
@@ -392,16 +413,16 @@ class NoraLangfuseTracer:
             result: Tool result
             latency_ms: Call latency in milliseconds
         """
-        if not self._current_trace:
+        if not self._root_span:
             return
 
         try:
-            span = self._current_trace.span(
+            span = self._root_span.start_span(
                 name=f"tool-{tool_name}",
                 input=parameters,
-                output=result,
                 metadata={"latency_ms": latency_ms},
             )
+            span.update(output=result)
             span.end()
 
             self._metrics.total_tool_calls += 1

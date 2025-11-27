@@ -470,14 +470,12 @@ async def entrypoint(ctx: JobContext):
         vad=ctx.proc.userdata["vad"],
 
         # STT - Deepgram Nova-3 (latency optimized)
+        # Note: LiveKit's Deepgram plugin handles streaming/interim results internally
+        # Endpointing is controlled via min_endpointing_delay below
         # See: https://deepgram.com/learn/low-latency-voice-ai-and-how-to-achieve-it
         stt=deepgram.STT(
             model="nova-3",
             language="en",
-            interim_results=True,      # Stream partial transcripts for faster LLM start
-            smart_format=False,        # Disable formatting for ~20ms savings
-            punctuate=False,           # Disable punctuation for ~10ms savings
-            endpointing=100,           # Aggressive endpointing (100ms silence = utterance end)
         ),
 
         # LLM - OpenAI (gpt-4o-mini for speed)
