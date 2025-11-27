@@ -14,8 +14,16 @@ from enum import Enum
 from typing import Any
 
 import structlog
-from anthropic import Anthropic, APIError
-from openai import OpenAI
+from openai import OpenAI, APIError as OpenAIAPIError
+
+# Anthropic is optional - only needed if using Anthropic LLM provider
+try:
+    from anthropic import Anthropic, APIError as AnthropicAPIError
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    Anthropic = None  # type: ignore
+    AnthropicAPIError = Exception  # type: ignore
+    ANTHROPIC_AVAILABLE = False
 
 from nora_livekit.conversation.context import ConversationContext, ConversationPhase
 
@@ -238,7 +246,7 @@ Avoid markdown or complex formatting.""",
                     finish_reason=response.choices[0].finish_reason or "unknown",
                 )
 
-            except APIError as e:
+            except OpenAIAPIError as e:
                 status_code = getattr(e, "status_code", None)
                 if status_code in retryable_errors and attempt < max_retries - 1:
                     await logger.awarning(
@@ -320,7 +328,7 @@ Avoid markdown or complex formatting.""",
                     finish_reason=response.stop_reason or "unknown",
                 )
 
-            except APIError as e:
+            except AnthropicAPIError as e:
                 status_code = getattr(e, "status_code", None)
                 if status_code in retryable_errors and attempt < max_retries - 1:
                     await logger.awarning(
