@@ -331,7 +331,8 @@ async def route_to_urgent_transfer(
         _current_session.update_agent(new_agent)
         logger.info(f"AGENT SWITCHED to URGENT_TRANSFER (~{len(new_prompt)//4} tokens)")
 
-    return "Switched to urgent transfer flow. Continue with data collection."
+    # Return explicit guidance - don't let the LLM improvise
+    return f"SAY THIS: I understand {pet_name or 'your pet'} needs urgent care. Let me collect a few details to help our team assist you quickly. What's the best phone number to reach you at?"
 
 
 @function_tool
@@ -378,7 +379,8 @@ async def route_to_message_flow(
         _current_session.update_agent(new_agent)
         logger.info(f"AGENT SWITCHED to MESSAGE_FLOW (~{len(new_prompt)//4} tokens)")
 
-    return "Switched to message flow. Continue with data collection."
+    # Return explicit guidance - don't let the LLM improvise
+    return f"SAY THIS: I can take a message for you about {pet_name or 'your pet'}. First, what's the best phone number to reach you at?"
 
 
 @function_tool
@@ -430,7 +432,8 @@ async def route_to_critical_emergency(
         _current_session.update_agent(new_agent)
         logger.info(f"AGENT SWITCHED to CRITICAL_EMERGENCY (~{len(new_prompt)//4} tokens)")
 
-    return "CRITICAL EMERGENCY - Switched to minimal collection flow. Get phone + name only, then transfer immediately."
+    # Return EXACT text to speak - don't let the LLM improvise for emergencies
+    return f"SAY EXACTLY THIS: Given the urgency with {pet_name}, I'm connecting you to Vet Wise, our live 24/7 triage service for immediate help. First, I can see you're calling from your phone. Is that the best number to call you back on if we get disconnected?"
 
 
 # =============================================================================
