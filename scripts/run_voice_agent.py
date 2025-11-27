@@ -228,6 +228,48 @@ def prewarm(proc: JobProcess):
 
 
 # =============================================================================
+# NORA AGENT CLASS - Custom agent with speech tracking callbacks
+# =============================================================================
+
+# Global turn counter for conversation tracking
+_turn_counter = 0
+
+
+class NoraAgent(Agent):
+    """Custom Nora agent with Langfuse speech tracking.
+
+    Extends the base Agent to capture user speech and agent responses
+    for observability in Langfuse.
+    """
+
+    async def on_user_turn_completed(self, turn_ctx, new_message):
+        """Called after user speaks, before LLM generates response.
+
+        This captures the STT transcription and logs it to Langfuse.
+        """
+        global _turn_counter
+        _turn_counter += 1
+
+        # Get the transcribed text
+        transcript = new_message.text_content if hasattr(new_message, 'text_content') else str(new_message)
+
+        if transcript:
+            logger.info(f"USER [{_turn_counter}]: {transcript}")
+
+            # Log to Langfuse
+            try:
+                tracer = get_tracer()
+                if tracer and tracer.enabled:
+                    tracer.trace_user_speech(
+                        transcript=transcript,
+                        turn_index=_turn_counter,
+                        metadata={"phase": _prompt_manager.current_phase.value if _prompt_manager else "unknown"},
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to trace user speech: {e}")
+
+
+# =============================================================================
 # ROUTING FUNCTION TOOLS - These trigger prompt phase transitions
 # Uses session.update_agent() to properly switch agent instructions
 # =============================================================================
@@ -282,7 +324,7 @@ async def route_to_urgent_transfer(
         )
 
         # Create new agent with urgent transfer prompt and switch to it
-        new_agent = Agent(
+        new_agent = NoraAgent(
             instructions=new_prompt,
             tools=_get_all_tools(),
         )
@@ -329,7 +371,7 @@ async def route_to_message_flow(
         )
 
         # Create new agent with message flow prompt and switch to it
-        new_agent = Agent(
+        new_agent = NoraAgent(
             instructions=new_prompt,
             tools=_get_all_tools(),
         )
@@ -381,7 +423,7 @@ async def route_to_critical_emergency(
         )
 
         # Create new agent with critical emergency prompt and switch to it
-        new_agent = Agent(
+        new_agent = NoraAgent(
             instructions=new_prompt,
             tools=_get_all_tools(),
         )
@@ -546,8 +588,8 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.warning(f"Langfuse tracing failed (non-fatal): {e}")
 
-    # Create the Nora agent with Phase 1 prompt
-    agent = Agent(
+    # Create the Nora agent with Phase 1 prompt (using NoraAgent for speech tracking)
+    agent = NoraAgent(
         instructions=greeter_prompt,
         tools=_get_all_tools(),
     )

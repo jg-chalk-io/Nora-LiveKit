@@ -428,6 +428,83 @@ class NoraLangfuseTracer:
         except Exception as e:
             logger.warning("langfuse.tool_trace_failed", error=str(e))
 
+    def trace_user_speech(
+        self,
+        transcript: str,
+        turn_index: int = 0,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Trace user speech (STT transcription).
+
+        Args:
+            transcript: The transcribed user speech
+            turn_index: Turn number in conversation
+            metadata: Additional metadata
+        """
+        if not self._root_span or not self.langfuse:
+            return
+
+        try:
+            # Create span for user speech
+            span = self.langfuse.start_span(
+                name="user-speech",
+                input={"turn_index": turn_index},
+                metadata={
+                    "character_count": len(transcript),
+                    "word_count": len(transcript.split()),
+                    **(metadata or {}),
+                },
+            )
+            span.update(output={"transcript": transcript})
+            span.end()
+
+            logger.info(
+                "langfuse.user_speech_traced",
+                turn_index=turn_index,
+                chars=len(transcript),
+                preview=transcript[:50] + "..." if len(transcript) > 50 else transcript,
+            )
+        except Exception as e:
+            logger.warning("langfuse.user_speech_trace_failed", error=str(e))
+
+    def trace_agent_response(
+        self,
+        response: str,
+        turn_index: int = 0,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Trace agent response (what the agent says).
+
+        Args:
+            response: The agent's response text
+            turn_index: Turn number in conversation
+            metadata: Additional metadata
+        """
+        if not self._root_span or not self.langfuse:
+            return
+
+        try:
+            # Create span for agent response
+            span = self.langfuse.start_span(
+                name="agent-response",
+                input={"turn_index": turn_index},
+                metadata={
+                    "character_count": len(response),
+                    "word_count": len(response.split()),
+                    **(metadata or {}),
+                },
+            )
+            span.update(output={"response": response})
+            span.end()
+
+            logger.info(
+                "langfuse.agent_response_traced",
+                turn_index=turn_index,
+                chars=len(response),
+            )
+        except Exception as e:
+            logger.warning("langfuse.agent_response_trace_failed", error=str(e))
+
     def flush(self) -> None:
         """Flush all pending events to Langfuse."""
         if self.langfuse:
