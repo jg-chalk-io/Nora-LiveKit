@@ -49,6 +49,7 @@ RUN pip install --upgrade pip && \
     livekit-plugins-turn-detector==1.3.5 \
     livekit-plugins-groq==1.3.5 \
     livekit-plugins-cerebras==1.3.5 \
+    livekit-plugins-ultravox==1.3.5 \
     python-dotenv \
     structlog \
     langfuse \

@@ -63,6 +63,12 @@ try:
 except ImportError:
     OPENAI_REALTIME_AVAILABLE = False
 
+try:
+    from livekit.plugins import ultravox
+    ULTRAVOX_AVAILABLE = True
+except ImportError:
+    ULTRAVOX_AVAILABLE = False
+
 # CRITICAL: Import turn detector at MODULE LEVEL to register inference runner
 # BEFORE Worker.__init__ is called. This must happen before cli.run_app().
 from livekit.plugins.turn_detector.english import EnglishModel  # noqa: F401
@@ -105,11 +111,15 @@ DEEPGRAM_TTS_VOICE = os.getenv("DEEPGRAM_TTS_VOICE", "aura-2-helena-en")
 
 # =============================================================================
 # LLM PROVIDER CONFIGURATION
-# Supported: openai, groq, cerebras, openai-realtime (speech-to-speech)
+# Supported: openai, groq, cerebras, ultravox (speech-to-speech)
 # =============================================================================
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "150"))  # Short responses for voice
+
+# Ultravox voice (only used when LLM_PROVIDER=ultravox)
+# Browse voices: https://app.ultravox.ai/voices
+ULTRAVOX_VOICE = os.getenv("ULTRAVOX_VOICE", "Mark")
 
 
 # =============================================================================
@@ -132,6 +142,11 @@ def _get_office_config() -> dict:
     }
 
 
+def _is_realtime_mode() -> bool:
+    """Check if using a realtime (speech-to-speech) model."""
+    return LLM_PROVIDER.lower() == "ultravox"
+
+
 def _get_llm():
     """Get LLM instance based on provider configuration.
 
@@ -139,6 +154,7 @@ def _get_llm():
     - openai: OpenAI GPT models (default)
     - groq: Groq's ultra-fast inference (requires GROQ_API_KEY)
     - cerebras: Cerebras fast inference (requires CEREBRAS_API_KEY)
+    - ultravox: Speech-to-speech realtime model (requires ULTRAVOX_API_KEY)
 
     Returns:
         LLM instance configured for the selected provider
@@ -149,7 +165,18 @@ def _get_llm():
 
     logger.info(f"Configuring LLM: provider={provider}, model={model}, max_tokens={max_tokens}")
 
-    if provider == "groq":
+    if provider == "ultravox":
+        if not ULTRAVOX_AVAILABLE:
+            logger.warning("Ultravox plugin not installed, falling back to OpenAI")
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+        if not os.getenv("ULTRAVOX_API_KEY"):
+            logger.warning("ULTRAVOX_API_KEY not set, falling back to OpenAI")
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+        logger.info(f"Using Ultravox realtime model with voice: {ULTRAVOX_VOICE}")
+        # Ultravox is a realtime model - handles STT+LLM+TTS in one connection
+        return ultravox.realtime.RealtimeModel(voice=ULTRAVOX_VOICE)
+
+    elif provider == "groq":
         if not GROQ_AVAILABLE:
             logger.warning("Groq plugin not installed, falling back to OpenAI")
             return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
@@ -538,47 +565,67 @@ async def entrypoint(ctx: JobContext):
         tools=_get_all_tools(),
     )
 
-    # Create the agent session with latency optimizations
-    session = AgentSession(
-        # VAD - prewarmed
-        vad=ctx.proc.userdata["vad"],
+    # Create the agent session based on provider mode
+    if _is_realtime_mode():
+        # Ultravox mode: Speech-to-speech (STT+LLM+TTS in single connection)
+        logger.info("Creating AgentSession in REALTIME mode (Ultravox)")
+        session = AgentSession(
+            # VAD - prewarmed
+            vad=ctx.proc.userdata["vad"],
 
-        # STT - Deepgram Nova-3 (latency optimized)
-        # Note: LiveKit's Deepgram plugin handles streaming/interim results internally
-        # Endpointing is controlled via min_endpointing_delay below
-        # See: https://deepgram.com/learn/low-latency-voice-ai-and-how-to-achieve-it
-        stt=deepgram.STT(
-            model="nova-3",
-            language="en",
-        ),
+            # Realtime model handles STT+LLM+TTS together
+            llm=_get_llm(),
 
-        # LLM - Configurable provider (openai, groq, cerebras)
-        # max_tokens limits response length for faster voice responses
-        llm=_get_llm(),
+            # Turn detection - English model
+            turn_detection=_get_turn_detector() if USE_TURN_DETECTOR else None,
 
-        # TTS - Deepgram Aura-2 (same provider as STT = reduced latency)
-        # Benefits: No extra network hop, shared connection, ~50ms savings
-        # Streaming is enabled by default - audio chunks sent as generated
-        tts=deepgram.TTS(
-            model=DEEPGRAM_TTS_VOICE,
-        ),
+            # Interruption handling
+            allow_interruptions=True,
+            min_interruption_duration=0.5,
+        )
+    else:
+        # Standard mode: Separate STT → LLM → TTS pipeline
+        logger.info("Creating AgentSession in STANDARD mode (STT→LLM→TTS)")
+        session = AgentSession(
+            # VAD - prewarmed
+            vad=ctx.proc.userdata["vad"],
 
-        # Turn detection - English model
-        turn_detection=_get_turn_detector() if USE_TURN_DETECTOR else None,
+            # STT - Deepgram Nova-3 (latency optimized)
+            # Note: LiveKit's Deepgram plugin handles streaming/interim results internally
+            # Endpointing is controlled via min_endpointing_delay below
+            # See: https://deepgram.com/learn/low-latency-voice-ai-and-how-to-achieve-it
+            stt=deepgram.STT(
+                model="nova-3",
+                language="en",
+            ),
 
-        # Endpointing delays (aggressive for low latency)
-        # min: Time to wait after speech stops before triggering response
-        # max: Maximum time to wait even if turn detector uncertain
-        min_endpointing_delay=0.25,    # Reduced from 0.3 for faster response
-        max_endpointing_delay=1.2,     # Reduced from 1.5 for snappier conversation
+            # LLM - Configurable provider (openai, groq, cerebras)
+            # max_tokens limits response length for faster voice responses
+            llm=_get_llm(),
 
-        # Enable preemptive generation
-        preemptive_generation=True,
+            # TTS - Deepgram Aura-2 (same provider as STT = reduced latency)
+            # Benefits: No extra network hop, shared connection, ~50ms savings
+            # Streaming is enabled by default - audio chunks sent as generated
+            tts=deepgram.TTS(
+                model=DEEPGRAM_TTS_VOICE,
+            ),
 
-        # Interruption handling
-        allow_interruptions=True,
-        min_interruption_duration=0.5,
-    )
+            # Turn detection - English model
+            turn_detection=_get_turn_detector() if USE_TURN_DETECTOR else None,
+
+            # Endpointing delays (aggressive for low latency)
+            # min: Time to wait after speech stops before triggering response
+            # max: Maximum time to wait even if turn detector uncertain
+            min_endpointing_delay=0.25,    # Reduced from 0.3 for faster response
+            max_endpointing_delay=1.2,     # Reduced from 1.5 for snappier conversation
+
+            # Enable preemptive generation
+            preemptive_generation=True,
+
+            # Interruption handling
+            allow_interruptions=True,
+            min_interruption_duration=0.5,
+        )
 
     # Store session reference for prompt switching
     _current_session = session
@@ -705,6 +752,7 @@ def main():
     print(f"  OpenAI: ✓ Available")
     print(f"  Groq: {'✓ Available' if GROQ_AVAILABLE else '○ Not installed (pip install livekit-plugins-groq)'}")
     print(f"  Cerebras: {'✓ Available' if CEREBRAS_AVAILABLE else '○ Not installed (pip install livekit-plugins-cerebras)'}")
+    print(f"  Ultravox: {'✓ Available (speech-to-speech)' if ULTRAVOX_AVAILABLE else '○ Not installed (pip install livekit-plugins-ultravox)'}")
 
     # Check Langfuse configuration
     langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
