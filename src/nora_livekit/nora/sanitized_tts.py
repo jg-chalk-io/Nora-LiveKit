@@ -2,6 +2,9 @@
 
 Wraps any LiveKit TTS plugin to sanitize LLM output before synthesis.
 This handles cases where LLMs output function call syntax as text.
+
+IMPORTANT: This uses composition/delegation rather than inheritance to avoid
+issues with LiveKit's abstract base classes requiring internal methods like _run.
 """
 
 import structlog
@@ -77,8 +80,9 @@ class SanitizedTTS(tts.TTS):
     ) -> tts.SynthesizeStream:
         """Create a streaming synthesis session.
 
-        Note: For streaming, we wrap the underlying stream to sanitize
-        text chunks as they are pushed.
+        For streaming, we return a wrapped stream that sanitizes text
+        before passing to the underlying TTS. The wrapper uses composition
+        rather than inheritance to avoid abstract method requirements.
 
         Args:
             conn_options: Connection options for the TTS API
@@ -90,8 +94,13 @@ class SanitizedTTS(tts.TTS):
         return SanitizedSynthesizeStream(underlying_stream, self._processor)
 
 
-class SanitizedSynthesizeStream(tts.SynthesizeStream):
-    """Wrapped SynthesizeStream that sanitizes pushed text."""
+class SanitizedSynthesizeStream:
+    """Wrapped SynthesizeStream that sanitizes pushed text.
+
+    Uses composition/delegation pattern - does NOT inherit from tts.SynthesizeStream
+    to avoid needing to implement abstract methods like _run.
+    All method calls are delegated to the wrapped stream.
+    """
 
     def __init__(
         self,
@@ -156,6 +165,25 @@ class SanitizedSynthesizeStream(tts.SynthesizeStream):
     async def __anext__(self):
         """Get next audio chunk from underlying stream."""
         return await self._wrapped.__anext__()
+
+    # Delegate all other attributes to wrapped stream for compatibility
+    def __getattr__(self, name):
+        """Delegate unknown attributes to wrapped stream."""
+        return getattr(self._wrapped, name)
+
+    # Context manager support - delegate to wrapped stream
+    async def __aenter__(self):
+        """Enter async context."""
+        if hasattr(self._wrapped, '__aenter__'):
+            await self._wrapped.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit async context."""
+        if hasattr(self._wrapped, '__aexit__'):
+            return await self._wrapped.__aexit__(exc_type, exc_val, exc_tb)
+        await self.aclose()
+        return False
 
 
 def wrap_tts(tts_instance: tts.TTS) -> SanitizedTTS:
