@@ -469,19 +469,27 @@ async def entrypoint(ctx: JobContext):
         # VAD - prewarmed
         vad=ctx.proc.userdata["vad"],
 
-        # STT - Deepgram Nova-3
+        # STT - Deepgram Nova-3 (latency optimized)
+        # See: https://deepgram.com/learn/low-latency-voice-ai-and-how-to-achieve-it
         stt=deepgram.STT(
             model="nova-3",
             language="en",
+            interim_results=True,      # Stream partial transcripts for faster LLM start
+            smart_format=False,        # Disable formatting for ~20ms savings
+            punctuate=False,           # Disable punctuation for ~10ms savings
+            endpointing=100,           # Aggressive endpointing (100ms silence = utterance end)
         ),
 
         # LLM - OpenAI (gpt-4o-mini for speed)
+        # Streaming is enabled by default in LiveKit's OpenAI plugin
         llm=openai.LLM(
             model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
             temperature=0.7,
         ),
 
         # TTS - Deepgram Aura-2 (same provider as STT = reduced latency)
+        # Benefits: No extra network hop, shared connection, ~50ms savings
+        # Streaming is enabled by default - audio chunks sent as generated
         tts=deepgram.TTS(
             model=DEEPGRAM_TTS_VOICE,
         ),
@@ -489,9 +497,11 @@ async def entrypoint(ctx: JobContext):
         # Turn detection - English model
         turn_detection=_get_turn_detector() if USE_TURN_DETECTOR else None,
 
-        # Endpointing delays
-        min_endpointing_delay=0.3,
-        max_endpointing_delay=1.5,
+        # Endpointing delays (aggressive for low latency)
+        # min: Time to wait after speech stops before triggering response
+        # max: Maximum time to wait even if turn detector uncertain
+        min_endpointing_delay=0.25,    # Reduced from 0.3 for faster response
+        max_endpointing_delay=1.2,     # Reduced from 1.5 for snappier conversation
 
         # Enable preemptive generation
         preemptive_generation=True,
