@@ -1,7 +1,7 @@
 {
   "branch": "feature/SPEC-LIVEKIT-003",
-  "last_commit": "cb1bbd5 fix(voice): Import turn detector at module level BEFORE Worker.__init__",
-  "commit_time": "3 minutes ago",
+  "last_commit": "0f57ac1 fix: Resolve STT params and Langfuse v3 API compatibility",
+  "commit_time": "10 minutes ago",
   "changes": 3,
-  "last_check": "2025-11-26T15:36:53.976514"
+  "last_check": "2025-11-26T22:56:18.040273"
 }

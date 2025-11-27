@@ -51,11 +51,6 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
 
-try:
-    import livekit.plugins.cerebras as cerebras
-    CEREBRAS_AVAILABLE = True
-except ImportError:
-    CEREBRAS_AVAILABLE = False
 
 try:
     from livekit.plugins.openai import realtime as openai_realtime
@@ -111,7 +106,7 @@ DEEPGRAM_TTS_VOICE = os.getenv("DEEPGRAM_TTS_VOICE", "aura-2-helena-en")
 
 # =============================================================================
 # LLM PROVIDER CONFIGURATION
-# Supported: openai, groq, cerebras, ultravox (speech-to-speech)
+# Supported: openai, groq, ultravox (speech-to-speech)
 # =============================================================================
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
@@ -153,7 +148,6 @@ def _get_llm():
     Supports:
     - openai: OpenAI GPT models (default)
     - groq: Groq's ultra-fast inference (requires GROQ_API_KEY)
-    - cerebras: Cerebras fast inference (requires CEREBRAS_API_KEY)
     - ultravox: Speech-to-speech realtime model (requires ULTRAVOX_API_KEY)
 
     Returns:
@@ -187,18 +181,6 @@ def _get_llm():
         groq_model = model if model.startswith("llama") or model.startswith("mixtral") else "llama-3.1-8b-instant"
         logger.info(f"Using Groq with model: {groq_model}")
         return groq.LLM(model=groq_model, temperature=0.7)
-
-    elif provider == "cerebras":
-        if not CEREBRAS_AVAILABLE:
-            logger.warning("Cerebras plugin not installed, falling back to OpenAI")
-            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
-        if not os.getenv("CEREBRAS_API_KEY"):
-            logger.warning("CEREBRAS_API_KEY not set, falling back to OpenAI")
-            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
-        # Cerebras models: llama-3.3-70b, llama-3.1-8b
-        cerebras_model = model if model.startswith("llama") else "llama-3.1-8b"
-        logger.info(f"Using Cerebras with model: {cerebras_model}")
-        return cerebras.LLM(model=cerebras_model, temperature=0.7)
 
     else:  # Default: openai
         return openai.LLM(model=model, temperature=0.7, max_tokens=max_tokens)
@@ -751,7 +733,6 @@ def main():
     print(f"\nLLM Provider Status:")
     print(f"  OpenAI: ✓ Available")
     print(f"  Groq: {'✓ Available' if GROQ_AVAILABLE else '○ Not installed (pip install livekit-plugins-groq)'}")
-    print(f"  Cerebras: {'✓ Available' if CEREBRAS_AVAILABLE else '○ Not installed (pip install livekit-plugins-cerebras)'}")
     print(f"  Ultravox: {'✓ Available (speech-to-speech)' if ULTRAVOX_AVAILABLE else '○ Not installed (pip install livekit-plugins-ultravox)'}")
 
     # Check Langfuse configuration
