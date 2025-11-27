@@ -454,9 +454,13 @@ async def collectNameNumberConcernPetName(
 
 
 @function_tool
-async def hangUp(context: RunContext) -> str:
-    """End the call."""
-    logger.info("HANGUP TRIGGERED")
+async def hangUp(context: RunContext, reason: str = "normal") -> str:
+    """End the call gracefully.
+
+    Args:
+        reason: Reason for ending the call (e.g., 'completed', 'transferred', 'caller_request')
+    """
+    logger.info("HANGUP TRIGGERED", extra={"reason": reason})
     # In production: trigger call termination
     return "Call ended"
 
