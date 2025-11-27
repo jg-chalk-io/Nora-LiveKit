@@ -41,7 +41,6 @@ from livekit.agents import (
     RunContext,
 )
 import livekit.plugins.deepgram as deepgram
-import livekit.plugins.cartesia as cartesia
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
 
@@ -79,11 +78,11 @@ OFFICE_PHONE = os.getenv("OFFICE_PHONE", "4165550198")
 IS_CLINIC_OPEN = os.getenv("IS_CLINIC_OPEN", "false").lower() == "true"
 
 # =============================================================================
-# CARTESIA VOICE CONFIGURATION
-# Browse voices at: https://play.cartesia.ai/
+# TTS VOICE CONFIGURATION
+# Deepgram Aura-2 voices: https://developers.deepgram.com/docs/tts-models
+# Options: aura-2-helena-en, aura-2-thalia-en, aura-2-andromeda-en, etc.
 # =============================================================================
-CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID", "79a125e8-cd45-4c13-8a67-188112f4dd22")
-CARTESIA_SPEED = float(os.getenv("CARTESIA_SPEED", "1.0"))
+DEEPGRAM_TTS_VOICE = os.getenv("DEEPGRAM_TTS_VOICE", "aura-2-helena-en")
 
 
 # =============================================================================
@@ -450,7 +449,7 @@ async def entrypoint(ctx: JobContext):
                     "room_name": ctx.room.name,
                     "is_clinic_open": IS_CLINIC_OPEN,
                     "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
-                    "voice_id": CARTESIA_VOICE_ID[:8],
+                    "voice_id": DEEPGRAM_TTS_VOICE,
                     "prompt_phase": "greeter",
                     "prompt_tokens": len(greeter_prompt) // 4,
                 },
@@ -482,10 +481,9 @@ async def entrypoint(ctx: JobContext):
             temperature=0.7,
         ),
 
-        # TTS - Cartesia Sonic (configurable voice)
-        tts=cartesia.TTS(
-            voice=CARTESIA_VOICE_ID,
-            speed=CARTESIA_SPEED,
+        # TTS - Deepgram Aura-2 (same provider as STT = reduced latency)
+        tts=deepgram.TTS(
+            model=DEEPGRAM_TTS_VOICE,
         ),
 
         # Turn detection - English model
@@ -591,8 +589,7 @@ def main():
         "LIVEKIT_URL": os.getenv("LIVEKIT_URL"),
         "LIVEKIT_API_KEY": os.getenv("LIVEKIT_API_KEY"),
         "LIVEKIT_API_SECRET": os.getenv("LIVEKIT_API_SECRET"),
-        "DEEPGRAM_API_KEY": os.getenv("DEEPGRAM_API_KEY"),
-        "CARTESIA_API_KEY": os.getenv("CARTESIA_API_KEY"),
+        "DEEPGRAM_API_KEY": os.getenv("DEEPGRAM_API_KEY"),  # Used for both STT and TTS
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
     }
 
@@ -621,7 +618,7 @@ def main():
     print("\nVoice Pipeline:")
     print(f"  STT: Deepgram Nova-3")
     print(f"  LLM: {os.getenv('LLM_MODEL', 'gpt-4o-mini')}")
-    print(f"  TTS: Cartesia Sonic (voice: {CARTESIA_VOICE_ID[:8]}..., speed: {CARTESIA_SPEED})")
+    print(f"  TTS: Deepgram Aura-2 (voice: {DEEPGRAM_TTS_VOICE})")
     print(f"  Turn Detection: {'Enabled' if USE_TURN_DETECTOR else 'Disabled'}")
 
     # Check Langfuse configuration
