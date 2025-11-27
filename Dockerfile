@@ -44,10 +44,11 @@ RUN pip install --upgrade pip && \
     pip install \
     livekit-agents==1.3.5 \
     livekit-plugins-deepgram==1.3.5 \
-    livekit-plugins-cartesia==1.3.5 \
     livekit-plugins-openai==1.3.5 \
     livekit-plugins-silero==1.3.5 \
     livekit-plugins-turn-detector==1.3.5 \
+    livekit-plugins-groq==1.3.5 \
+    livekit-plugins-cerebras==1.3.5 \
     python-dotenv \
     structlog \
     langfuse \

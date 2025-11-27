@@ -44,6 +44,25 @@ import livekit.plugins.deepgram as deepgram
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
 
+# Optional LLM providers - imported conditionally
+try:
+    import livekit.plugins.groq as groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
+try:
+    import livekit.plugins.cerebras as cerebras
+    CEREBRAS_AVAILABLE = True
+except ImportError:
+    CEREBRAS_AVAILABLE = False
+
+try:
+    from livekit.plugins.openai import realtime as openai_realtime
+    OPENAI_REALTIME_AVAILABLE = True
+except ImportError:
+    OPENAI_REALTIME_AVAILABLE = False
+
 # CRITICAL: Import turn detector at MODULE LEVEL to register inference runner
 # BEFORE Worker.__init__ is called. This must happen before cli.run_app().
 from livekit.plugins.turn_detector.english import EnglishModel  # noqa: F401
@@ -84,6 +103,14 @@ IS_CLINIC_OPEN = os.getenv("IS_CLINIC_OPEN", "false").lower() == "true"
 # =============================================================================
 DEEPGRAM_TTS_VOICE = os.getenv("DEEPGRAM_TTS_VOICE", "aura-2-helena-en")
 
+# =============================================================================
+# LLM PROVIDER CONFIGURATION
+# Supported: openai, groq, cerebras, openai-realtime (speech-to-speech)
+# =============================================================================
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "150"))  # Short responses for voice
+
 
 # =============================================================================
 # GLOBAL STATE FOR PROMPT SWITCHING
@@ -103,6 +130,51 @@ def _get_office_config() -> dict:
         "phone": OFFICE_PHONE,
         "is_open": IS_CLINIC_OPEN,
     }
+
+
+def _get_llm():
+    """Get LLM instance based on provider configuration.
+
+    Supports:
+    - openai: OpenAI GPT models (default)
+    - groq: Groq's ultra-fast inference (requires GROQ_API_KEY)
+    - cerebras: Cerebras fast inference (requires CEREBRAS_API_KEY)
+
+    Returns:
+        LLM instance configured for the selected provider
+    """
+    provider = LLM_PROVIDER.lower()
+    model = LLM_MODEL
+    max_tokens = LLM_MAX_TOKENS
+
+    logger.info(f"Configuring LLM: provider={provider}, model={model}, max_tokens={max_tokens}")
+
+    if provider == "groq":
+        if not GROQ_AVAILABLE:
+            logger.warning("Groq plugin not installed, falling back to OpenAI")
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+        if not os.getenv("GROQ_API_KEY"):
+            logger.warning("GROQ_API_KEY not set, falling back to OpenAI")
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+        # Groq models: llama-3.3-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768
+        groq_model = model if model.startswith("llama") or model.startswith("mixtral") else "llama-3.1-8b-instant"
+        logger.info(f"Using Groq with model: {groq_model}")
+        return groq.LLM(model=groq_model, temperature=0.7)
+
+    elif provider == "cerebras":
+        if not CEREBRAS_AVAILABLE:
+            logger.warning("Cerebras plugin not installed, falling back to OpenAI")
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+        if not os.getenv("CEREBRAS_API_KEY"):
+            logger.warning("CEREBRAS_API_KEY not set, falling back to OpenAI")
+            return openai.LLM(model="gpt-4o-mini", temperature=0.7, max_tokens=max_tokens)
+        # Cerebras models: llama-3.3-70b, llama-3.1-8b
+        cerebras_model = model if model.startswith("llama") else "llama-3.1-8b"
+        logger.info(f"Using Cerebras with model: {cerebras_model}")
+        return cerebras.LLM(model=cerebras_model, temperature=0.7)
+
+    else:  # Default: openai
+        return openai.LLM(model=model, temperature=0.7, max_tokens=max_tokens)
 
 
 def _get_turn_detector():
@@ -448,7 +520,9 @@ async def entrypoint(ctx: JobContext):
                 metadata={
                     "room_name": ctx.room.name,
                     "is_clinic_open": IS_CLINIC_OPEN,
-                    "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
+                    "llm_provider": LLM_PROVIDER,
+                    "llm_model": LLM_MODEL,
+                    "llm_max_tokens": LLM_MAX_TOKENS,
                     "voice_id": DEEPGRAM_TTS_VOICE,
                     "prompt_phase": "greeter",
                     "prompt_tokens": len(greeter_prompt) // 4,
@@ -478,12 +552,9 @@ async def entrypoint(ctx: JobContext):
             language="en",
         ),
 
-        # LLM - OpenAI (gpt-4o-mini for speed)
-        # Streaming is enabled by default in LiveKit's OpenAI plugin
-        llm=openai.LLM(
-            model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
-            temperature=0.7,
-        ),
+        # LLM - Configurable provider (openai, groq, cerebras)
+        # max_tokens limits response length for faster voice responses
+        llm=_get_llm(),
 
         # TTS - Deepgram Aura-2 (same provider as STT = reduced latency)
         # Benefits: No extra network hop, shared connection, ~50ms savings
@@ -625,9 +696,15 @@ def main():
 
     print("\nVoice Pipeline:")
     print(f"  STT: Deepgram Nova-3")
-    print(f"  LLM: {os.getenv('LLM_MODEL', 'gpt-4o-mini')}")
+    print(f"  LLM: {LLM_PROVIDER}/{LLM_MODEL} (max_tokens={LLM_MAX_TOKENS})")
     print(f"  TTS: Deepgram Aura-2 (voice: {DEEPGRAM_TTS_VOICE})")
     print(f"  Turn Detection: {'Enabled' if USE_TURN_DETECTOR else 'Disabled'}")
+
+    # Show LLM provider availability
+    print(f"\nLLM Provider Status:")
+    print(f"  OpenAI: ✓ Available")
+    print(f"  Groq: {'✓ Available' if GROQ_AVAILABLE else '○ Not installed (pip install livekit-plugins-groq)'}")
+    print(f"  Cerebras: {'✓ Available' if CEREBRAS_AVAILABLE else '○ Not installed (pip install livekit-plugins-cerebras)'}")
 
     # Check Langfuse configuration
     langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
