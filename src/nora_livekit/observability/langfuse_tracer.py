@@ -1,6 +1,6 @@
 """Langfuse tracer for Nora voice agent observability.
 
-Uses Langfuse SDK v3 (OTEL-based) API.
+Uses Langfuse SDK v3 API with manual span management.
 
 Tracks:
 - LLM calls with latency, tokens, and cost
@@ -89,18 +89,14 @@ class NoraLangfuseTracer:
             return
 
         try:
-            # Set environment variables for Langfuse SDK v3
-            if self.public_key:
-                os.environ["LANGFUSE_PUBLIC_KEY"] = self.public_key
-            if self.secret_key:
-                os.environ["LANGFUSE_SECRET_KEY"] = self.secret_key
-            if self.host:
-                os.environ["LANGFUSE_HOST"] = self.host
+            # Use direct Langfuse class for v3 SDK
+            from langfuse import Langfuse
 
-            # Import and get the v3 client
-            from langfuse import get_client
-
-            self.langfuse = get_client()
+            self.langfuse = Langfuse(
+                public_key=self.public_key,
+                secret_key=self.secret_key,
+                host=self.host,
+            )
         except Exception as e:
             logger.warning("langfuse.init_failed", error=str(e))
             self.langfuse = None
@@ -121,16 +117,13 @@ class NoraLangfuseTracer:
     ) -> Optional[Any]:
         """Start a new conversation trace.
 
-        In Langfuse v3, traces are created implicitly by the first span.
-        We create a root span to represent the conversation.
-
         Args:
             caller_phone: Caller's phone number
             office_name: Office/clinic name
             metadata: Additional metadata
 
         Returns:
-            Root span object or None
+            Span object or None
         """
         if not self.enabled or not self.langfuse:
             return None
@@ -145,9 +138,10 @@ class NoraLangfuseTracer:
                 **(metadata or {}),
             }
 
-            # Create root span - this implicitly creates the trace in v3
+            # Langfuse v3: Use start_span for manual span management
             self._root_span = self.langfuse.start_span(
                 name="nora-conversation",
+                input={"caller_phone": caller_phone[:4] + "..." if caller_phone else "unknown"},
                 metadata=trace_metadata,
             )
 
@@ -252,15 +246,15 @@ class NoraLangfuseTracer:
 
     def _trace_stt_metrics(self, metric: Any) -> None:
         """Trace STT (speech-to-text) metrics."""
-        if not self._root_span:
+        if not self._root_span or not self.langfuse:
             return
 
         try:
             duration_ms = getattr(metric, "duration", 0) * 1000
             audio_duration_ms = getattr(metric, "audio_duration", 0) * 1000
 
-            # Create child span for STT under root
-            span = self._root_span.start_span(
+            # Create child span for STT (v3 API)
+            span = self.langfuse.start_span(
                 name="stt-transcription",
                 input={"audio_duration_ms": audio_duration_ms},
                 metadata={
@@ -285,7 +279,7 @@ class NoraLangfuseTracer:
 
     def _trace_llm_metrics(self, metric: Any) -> None:
         """Trace LLM (language model) metrics."""
-        if not self._root_span:
+        if not self._root_span or not self.langfuse:
             return
 
         try:
@@ -294,26 +288,24 @@ class NoraLangfuseTracer:
             prompt_tokens = getattr(metric, "prompt_tokens", 0)
             completion_tokens = getattr(metric, "completion_tokens", 0)
 
-            # Create generation span for LLM under root
-            generation = self._root_span.start_generation(
+            # Create span for LLM (v3 API - using span instead of generation)
+            span = self.langfuse.start_span(
                 name="llm-generation",
-                model=getattr(metric, "model", "unknown"),
-                input={"request_id": getattr(metric, "request_id", "")},
+                input={
+                    "request_id": getattr(metric, "request_id", ""),
+                    "model": getattr(metric, "model", "unknown"),
+                },
                 metadata={
                     "ttft_ms": ttft_ms,
                     "duration_ms": duration_ms,
                     "cancelled": getattr(metric, "cancelled", False),
-                },
-            )
-            generation.update(
-                output=getattr(metric, "content", ""),
-                usage={
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "total_tokens": prompt_tokens + completion_tokens,
                 },
             )
-            generation.end()
+            span.update(output={"content": getattr(metric, "content", "")})
+            span.end()
 
             # Accumulate metrics
             self._metrics.llm_total_prompt_tokens += prompt_tokens
@@ -332,7 +324,7 @@ class NoraLangfuseTracer:
 
     def _trace_tts_metrics(self, metric: Any) -> None:
         """Trace TTS (text-to-speech) metrics."""
-        if not self._root_span:
+        if not self._root_span or not self.langfuse:
             return
 
         try:
@@ -340,8 +332,8 @@ class NoraLangfuseTracer:
             duration_ms = getattr(metric, "duration", 0) * 1000
             characters = getattr(metric, "characters_count", 0)
 
-            # Create span for TTS under root
-            span = self._root_span.start_span(
+            # Create span for TTS (v3 API)
+            span = self.langfuse.start_span(
                 name="tts-synthesis",
                 input={"characters": characters},
                 metadata={
@@ -368,15 +360,15 @@ class NoraLangfuseTracer:
 
     def _trace_pipeline_metrics(self, metric: Any) -> None:
         """Trace end-to-end pipeline metrics."""
-        if not self._root_span:
+        if not self._root_span or not self.langfuse:
             return
 
         try:
             sequence_id = getattr(metric, "sequence_id", "")
             e2e_latency_ms = getattr(metric, "e2e_latency", 0) * 1000
 
-            # Create span for pipeline under root
-            span = self._root_span.start_span(
+            # Create span for pipeline (v3 API)
+            span = self.langfuse.start_span(
                 name="pipeline-turn",
                 input={"sequence_id": sequence_id},
                 metadata={
@@ -413,16 +405,17 @@ class NoraLangfuseTracer:
             result: Tool result
             latency_ms: Call latency in milliseconds
         """
-        if not self._root_span:
+        if not self._root_span or not self.langfuse:
             return
 
         try:
-            span = self._root_span.start_span(
+            # Create span for tool call (v3 API)
+            span = self.langfuse.start_span(
                 name=f"tool-{tool_name}",
                 input=parameters,
                 metadata={"latency_ms": latency_ms},
             )
-            span.update(output=result)
+            span.update(output={"result": result})
             span.end()
 
             self._metrics.total_tool_calls += 1
