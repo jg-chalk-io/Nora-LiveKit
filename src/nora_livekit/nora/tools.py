@@ -1,8 +1,9 @@
 """Nora-specific LLM tools for LiveKit Agents.
 
-Implements the two core tools that Nora's workflow requires:
+Implements the core tools that Nora's workflow requires:
 - transferFromAiTriageWithMetadata: Transfer to Vet Wise with full metadata
 - collectNameNumberConcernPetName: Save non-urgent message
+- queryCorpus: Look up pet breed/species information
 
 Satisfies REQ-F-NORA-TOOLS-001 through REQ-F-NORA-TOOLS-004.
 """
@@ -10,6 +11,8 @@ Satisfies REQ-F-NORA-TOOLS-001 through REQ-F-NORA-TOOLS-004.
 from typing import Callable, Optional
 
 import structlog
+
+from ..data.pets_corpus_loader import get_pets_corpus
 
 logger = structlog.get_logger(__name__)
 
@@ -154,6 +157,37 @@ class NoraTools:
 
         return "Message saved"
 
+    async def query_corpus(self, breed_query: str) -> str:
+        """Look up pet breed/species information from corpus.
+
+        Searches the pets corpus for breed information based on the
+        caller's description. Supports exact matches, common names
+        (e.g., "Yorkie" → "Yorkshire Terrier"), and partial matches.
+
+        Args:
+            breed_query: Breed term from user (e.g., "Yorkie", "Lab", "Goldendoodle")
+
+        Returns:
+            JSON-formatted string with breed info:
+            - If found: {"found": true, "species": "Dog", "breed": "Yorkshire Terrier", ...}
+            - If not found: {"found": false}
+        """
+        import json
+
+        corpus = get_pets_corpus()
+        result = corpus.search(breed_query)
+
+        logger.info(
+            "nora.tools.query_corpus",
+            query=breed_query,
+            found=result.found,
+            species=result.species,
+            breed=result.breed,
+            match_type=result.match_type,
+        )
+
+        return json.dumps(result.to_dict())
+
 
 def get_tool_definitions() -> list[dict]:
     """Get OpenAI-compatible tool definitions for Nora tools.
@@ -239,6 +273,23 @@ def get_tool_definitions() -> list[dict]:
                         },
                     },
                     "required": ["callback_number", "first_name"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "queryCorpus",
+                "description": "Look up pet breed and species information. Use when caller mentions a breed name or nickname to determine the species (dog, cat, etc.). Supports common names like 'Yorkie' for Yorkshire Terrier, 'Lab' for Labrador Retriever.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "breed_query": {
+                            "type": "string",
+                            "description": "The breed name or nickname mentioned by caller (e.g., 'Yorkie', 'Lab', 'Goldendoodle', 'Maine Coon')",
+                        },
+                    },
+                    "required": ["breed_query"],
                 },
             },
         },
