@@ -1,9 +1,10 @@
 """Prompt manager for phased conversation handling.
 
-Enables dynamic prompt switching for reduced latency:
-- Phase 1 loads minimal prompt for greeting (~2K tokens)
-- Phase 2 loads specialized prompt based on triage result (~4-5K tokens)
-- Total savings: 60-70% vs single 18K token prompt
+Enables dynamic prompt switching with modular architecture:
+- Core rules loaded with EVERY phase (~3K tokens)
+- Handler modules loaded on-demand
+- Phase-specific prompts (~2-5K tokens each)
+- Total: ~5-8K tokens per phase vs 18K single prompt
 """
 
 from dataclasses import dataclass, field
@@ -26,6 +27,14 @@ class PromptPhase(Enum):
     URGENT_TRANSFER = "phase2a_urgent_transfer"
     MESSAGE_FLOW = "phase2b_message_flow"
     CRITICAL_EMERGENCY = "phase2c_critical_emergency"
+
+
+class HandlerType(Enum):
+    """Handler modules for specific situations."""
+
+    CONFUSION = "confusion"
+    EMERGENCY = "emergency"
+    SPECIAL = "special"
 
 
 @dataclass
@@ -74,28 +83,78 @@ class ConversationContext:
         digits = "".join(c for c in phone if c.isdigit())
         if len(digits) == 10:
             return f"{digits[0]} {digits[1]} {digits[2]}... {digits[3]} {digits[4]} {digits[5]}... {digits[6]} {digits[7]} {digits[8]} {digits[9]}"
+        if len(digits) == 11 and digits[0] == "1":
+            # Handle 1+ country code
+            return f"{digits[1]} {digits[2]} {digits[3]}... {digits[4]} {digits[5]} {digits[6]}... {digits[7]} {digits[8]} {digits[9]} {digits[10]}"
         return " ".join(digits)
 
 
 @dataclass
 class PromptManager:
-    """Manages phased prompts for conversation handling."""
+    """Manages phased prompts with modular architecture."""
 
     prompts_dir: Path
     office_config: dict[str, Any] = field(default_factory=dict)
     _current_phase: PromptPhase = PromptPhase.GREETER
     _context: ConversationContext = field(default_factory=ConversationContext)
     _prompt_cache: dict[PromptPhase, str] = field(default_factory=dict)
+    _core_rules: str = ""
+    _handlers: dict[HandlerType, str] = field(default_factory=dict)
+    _include_handlers_in_prompt: bool = True  # Toggle for including handlers
 
     def __post_init__(self):
         """Load all prompts into cache."""
+        # Load core rules first
+        self._load_core_rules()
+
+        # Load all handlers
+        self._load_handlers()
+
+        # Load phase-specific prompts
         for phase in PromptPhase:
             self._load_prompt(phase)
+
         logger.info(
             "prompt_manager.initialized",
             phases_loaded=len(self._prompt_cache),
+            handlers_loaded=len(self._handlers),
+            has_core_rules=bool(self._core_rules),
             prompts_dir=str(self.prompts_dir),
         )
+
+    def _load_core_rules(self) -> None:
+        """Load the core rules that apply to all phases."""
+        core_rules_file = self.prompts_dir / "core_rules.md"
+        if core_rules_file.exists():
+            self._core_rules = core_rules_file.read_text()
+            logger.debug(
+                "prompt_manager.core_rules_loaded",
+                chars=len(self._core_rules),
+            )
+        else:
+            logger.warning("prompt_manager.core_rules_not_found")
+
+    def _load_handlers(self) -> None:
+        """Load handler modules."""
+        handlers_dir = self.prompts_dir / "handlers"
+        if not handlers_dir.exists():
+            logger.warning("prompt_manager.handlers_dir_not_found")
+            return
+
+        for handler_type in HandlerType:
+            handler_file = handlers_dir / f"{handler_type.value}.md"
+            if handler_file.exists():
+                self._handlers[handler_type] = handler_file.read_text()
+                logger.debug(
+                    "prompt_manager.handler_loaded",
+                    handler=handler_type.value,
+                    chars=len(self._handlers[handler_type]),
+                )
+            else:
+                logger.warning(
+                    "prompt_manager.handler_not_found",
+                    handler=handler_type.value,
+                )
 
     def _load_prompt(self, phase: PromptPhase) -> str:
         """Load a prompt file and cache it."""
@@ -113,14 +172,61 @@ class PromptManager:
         )
         return content
 
-    def get_current_prompt(self) -> str:
-        """Get the current phase's prompt with template variables filled."""
+    def _assemble_full_prompt(self, phase_prompt: str) -> str:
+        """Assemble full prompt with core rules and handlers.
+
+        Structure:
+        1. Core Rules (always included)
+        2. Handlers (included if _include_handlers_in_prompt is True)
+        3. Phase-specific prompt
+
+        This allows LLM to reference core rules and handlers from any phase.
+        """
+        parts = []
+
+        # 1. Core rules (always first)
+        if self._core_rules:
+            parts.append(self._core_rules)
+
+        # 2. Handlers (if enabled)
+        if self._include_handlers_in_prompt:
+            for handler_type, handler_content in self._handlers.items():
+                if handler_content:
+                    parts.append(f"\n---\n\n# Handler: {handler_type.value.title()}\n\n{handler_content}")
+
+        # 3. Phase-specific prompt
+        parts.append(f"\n---\n\n{phase_prompt}")
+
+        return "\n".join(parts)
+
+    def get_current_prompt(self, include_core: bool = True) -> str:
+        """Get the current phase's prompt with template variables filled.
+
+        Args:
+            include_core: If True, prepend core rules and handlers.
+                         If False, return only phase-specific prompt.
+        """
         template = self._prompt_cache.get(self._current_phase, "")
+
+        if include_core:
+            template = self._assemble_full_prompt(template)
+
         return self._fill_template(template)
 
-    def get_prompt_for_phase(self, phase: PromptPhase) -> str:
+    def get_prompt_for_phase(
+        self, phase: PromptPhase, include_core: bool = True
+    ) -> str:
         """Get a specific phase's prompt with template variables filled."""
         template = self._prompt_cache.get(phase, "")
+
+        if include_core:
+            template = self._assemble_full_prompt(template)
+
+        return self._fill_template(template)
+
+    def get_handler(self, handler_type: HandlerType) -> str:
+        """Get a specific handler's content with template variables filled."""
+        template = self._handlers.get(handler_type, "")
         return self._fill_template(template)
 
     def _fill_template(self, template: str) -> str:
@@ -197,12 +303,45 @@ class PromptManager:
         """Get current conversation context."""
         return self._context
 
-    def get_estimated_tokens(self, phase: Optional[PromptPhase] = None) -> int:
-        """Estimate token count for a phase's prompt."""
+    def get_estimated_tokens(
+        self, phase: Optional[PromptPhase] = None, include_core: bool = True
+    ) -> int:
+        """Estimate token count for a phase's prompt.
+
+        Args:
+            phase: Phase to estimate. Defaults to current phase.
+            include_core: Include core rules and handlers in estimate.
+        """
         target_phase = phase or self._current_phase
         prompt = self._prompt_cache.get(target_phase, "")
+
+        if include_core:
+            prompt = self._assemble_full_prompt(prompt)
+
         # Rough estimate: ~4 chars per token
         return len(prompt) // 4
+
+    def get_prompt_stats(self) -> dict[str, Any]:
+        """Get statistics about loaded prompts."""
+        return {
+            "core_rules_chars": len(self._core_rules),
+            "core_rules_tokens_est": len(self._core_rules) // 4,
+            "handlers": {
+                h.value: {
+                    "chars": len(c),
+                    "tokens_est": len(c) // 4,
+                }
+                for h, c in self._handlers.items()
+            },
+            "phases": {
+                p.value: {
+                    "chars": len(c),
+                    "tokens_est": len(c) // 4,
+                    "full_tokens_est": self.get_estimated_tokens(p, include_core=True),
+                }
+                for p, c in self._prompt_cache.items()
+            },
+        }
 
 
 def get_prompt_manager(
