@@ -100,9 +100,9 @@ IS_CLINIC_OPEN = os.getenv("IS_CLINIC_OPEN", "false").lower() == "true"
 # =============================================================================
 # TTS VOICE CONFIGURATION
 # Deepgram Aura-2 voices: https://developers.deepgram.com/docs/tts-models
-# Options: aura-2-helena-en, aura-2-thalia-en, aura-2-andromeda-en, etc.
+# Options: aura-2-thalia-en (clearer), aura-2-helena-en, aura-2-andromeda-en
 # =============================================================================
-DEEPGRAM_TTS_VOICE = os.getenv("DEEPGRAM_TTS_VOICE", "aura-2-helena-en")
+DEEPGRAM_TTS_VOICE = os.getenv("DEEPGRAM_TTS_VOICE", "aura-2-thalia-en")
 
 # =============================================================================
 # LLM PROVIDER CONFIGURATION
@@ -578,8 +578,10 @@ async def entrypoint(ctx: JobContext):
             # Endpointing is controlled via min_endpointing_delay below
             # See: https://deepgram.com/learn/low-latency-voice-ai-and-how-to-achieve-it
             stt=deepgram.STT(
-                model="nova-3",
+                model="nova-3",  # Latest model with best accuracy
                 language="en",
+                smart_format=True,  # Better formatting of numbers, dates
+                filler_words=False,  # Remove "um", "uh" for cleaner transcripts
             ),
 
             # LLM - Configurable provider (openai, groq, cerebras)
