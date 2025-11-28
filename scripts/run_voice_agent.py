@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Run Nora Voice Agent with LiveKit - Phased Prompt Architecture.
+"""Run Nora Voice Agent with LiveKit - Task-Based Workflow Architecture.
 
 This script creates Nora, the veterinary virtual assistant with:
-1. PHASED PROMPTS for reduced latency:
-   - Phase 1: Greeter (~2K tokens) - Handles greeting and triage
-   - Phase 2A: Urgent Transfer (~5K tokens) - Full collection for urgent cases
-   - Phase 2B: Message Flow (~4K tokens) - Non-urgent message taking
-   - Phase 2C: Critical Emergency (~2K tokens) - Life-threatening, minimal data
-2. Latency-optimized voice pipeline (sub-300ms target with Phase 1)
-3. Seamless prompt transitions via function tools
+1. TASK-BASED WORKFLOWS for proper conversation flow:
+   - GreeterAgent: Initial greeting and triage routing
+   - UrgentTransferAgent: Uses CollectUrgentInfoTask for data collection
+   - MessageFlowAgent: Uses CollectMessageInfoTask for callbacks
+   - CriticalEmergencyAgent: Fastest path with CollectCriticalInfoTask
+2. Latency-optimized voice pipeline (sub-300ms target)
+3. Proper agent handoffs via function tool returns (no infinite loops!)
 4. Langfuse observability for latency tracking
+
+Architecture:
+    GreeterAgent (triage)
+        ├── returns UrgentTransferAgent (needs urgent help)
+        ├── returns MessageFlowAgent (can wait for callback)
+        └── returns CriticalEmergencyAgent (life-threatening)
+
+    Each specialist agent uses AgentTask for focused data collection,
+    preventing the routing tool loop bug.
 
 Usage:
     # Start in development mode (uses LiveKit playground)
@@ -30,15 +39,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from dotenv import load_dotenv
 
 from livekit.agents import (
-    Agent,
     AgentSession,
     JobContext,
     JobProcess,
     WorkerOptions,
     cli,
-    function_tool,
     metrics,
-    RunContext,
 )
 import livekit.plugins.deepgram as deepgram
 import livekit.plugins.silero as silero
@@ -77,8 +83,9 @@ load_dotenv()
 # Langfuse observability
 from nora_livekit.observability import init_langfuse, get_tracer
 
-# Phased prompt manager
-from nora_livekit.prompts import PromptManager, PromptPhase, get_prompt_manager
+# Workflow agents and data classes (Task-based architecture)
+from nora_livekit.workflows import GreeterAgent
+from nora_livekit.workflows.data import SessionContext
 
 # Sanitized TTS wrapper (removes function call syntax from LLM output)
 from nora_livekit.nora.sanitized_tts import wrap_tts
@@ -120,12 +127,6 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "150"))  # Short responses for 
 ULTRAVOX_VOICE = os.getenv("ULTRAVOX_VOICE", "Mark")
 
 
-# =============================================================================
-# GLOBAL STATE FOR PROMPT SWITCHING
-# =============================================================================
-# Store the current session and agent for prompt switching
-_current_session: AgentSession | None = None
-_prompt_manager: PromptManager | None = None
 
 
 def _get_office_config() -> dict:
@@ -180,9 +181,9 @@ def _get_llm():
         if not os.getenv("GROQ_API_KEY"):
             logger.warning("GROQ_API_KEY not set, falling back to OpenAI")
             return openai.LLM(model="gpt-4o-mini", temperature=0.7)
-        # Groq models: llama-3.1-8b-instant (fast), llama-3.3-70b-versatile (better quality)
-        # Note: All Groq models support tool calling - the issue is model behavior, not capability
-        groq_model = model if model.startswith("llama") or model.startswith("mixtral") else "llama-3.1-8b-instant"
+        # Groq models: llama-3.3-70b-versatile (reliable tool calling), llama-3.1-8b-instant (fast but flaky)
+        # The 8B model generates invalid function calls; 70B is more reliable
+        groq_model = model if model.startswith("llama") or model.startswith("mixtral") else "llama-3.3-70b-versatile"
         logger.info(f"Using Groq with model: {groq_model}")
         return groq.LLM(model=groq_model, temperature=0.7)
 
@@ -205,19 +206,9 @@ def prewarm(proc: JobProcess):
     logger.info("  Loading Silero VAD...")
     proc.userdata["vad"] = silero.VAD.load()
 
-    # Initialize prompt manager with Phase 1
-    logger.info("  Initializing phased prompt manager...")
-    prompts_dir = Path(__file__).parent.parent / "prompts"
-    manager = PromptManager(
-        prompts_dir=prompts_dir,
-        office_config=_get_office_config(),
-    )
-    proc.userdata["prompt_manager"] = manager
-
-    # Log prompt sizes for comparison
-    for phase in PromptPhase:
-        tokens = manager.get_estimated_tokens(phase)
-        logger.info(f"    {phase.value}: ~{tokens} tokens")
+    # Note: Workflow agents load their own prompts internally
+    # No need for PromptManager prewarming with Task-based architecture
+    logger.info("  Task-based workflow: Agents load prompts on demand")
 
     # Initialize Langfuse observability
     logger.info("  Initializing Langfuse observability...")
@@ -231,352 +222,20 @@ def prewarm(proc: JobProcess):
     logger.info("Models prewarmed successfully!")
 
 
-# =============================================================================
-# NORA AGENT CLASS - Custom agent with speech tracking callbacks
-# =============================================================================
-
-# Global turn counter for conversation tracking
-_turn_counter = 0
-
-
-class NoraAgent(Agent):
-    """Custom Nora agent with Langfuse speech tracking.
-
-    Extends the base Agent to capture user speech and agent responses
-    for observability in Langfuse.
-    """
-
-    async def on_user_turn_completed(self, turn_ctx, new_message):
-        """Called after user speaks, before LLM generates response.
-
-        This captures the STT transcription and logs it to Langfuse.
-        """
-        global _turn_counter
-        _turn_counter += 1
-
-        # Get the transcribed text
-        transcript = new_message.text_content if hasattr(new_message, 'text_content') else str(new_message)
-
-        if transcript:
-            logger.info(f"USER [{_turn_counter}]: {transcript}")
-
-            # Log to Langfuse
-            try:
-                tracer = get_tracer()
-                if tracer and tracer.enabled:
-                    tracer.trace_user_speech(
-                        transcript=transcript,
-                        turn_index=_turn_counter,
-                        metadata={"phase": _prompt_manager.current_phase.value if _prompt_manager else "unknown"},
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to trace user speech: {e}")
-
-
-# =============================================================================
-# ROUTING FUNCTION TOOLS - These trigger prompt phase transitions
-# Uses session.update_agent() to properly switch agent instructions
-# =============================================================================
-
-def _get_greeter_tools():
-    """Get tools for Phase 1 greeter - ONLY routing tools, no data collection."""
-    return [
-        route_to_urgent_transfer,
-        route_to_message_flow,
-        route_to_critical_emergency,
-        queryCorpus,
-    ]
-
-
-def _get_phase2_tools():
-    """Get tools for Phase 2 flows - includes data collection and transfer."""
-    return [
-        route_to_urgent_transfer,
-        route_to_message_flow,
-        route_to_critical_emergency,
-        transferFromAiTriageWithMetadata,
-        collectNameNumberConcernPetName,
-        hangUp,
-        queryCorpus,
-    ]
-
-
-def _get_all_tools():
-    """Get all tools - DEPRECATED, use phase-specific functions."""
-    return _get_phase2_tools()
-
-
-@function_tool
-async def route_to_urgent_transfer(
-    context: RunContext,
-    pet_name: str = "",
-    species: str = "",
-    reason: str = "",
-    caller_phone: str = "",
-) -> str:
-    """Route to urgent transfer flow when pet needs immediate assistance.
-
-    Call this when the caller confirms their pet needs immediate help.
-    This will switch to the specialized urgent transfer agent.
-    """
-    global _prompt_manager, _current_session
-
-    logger.info(
-        "ROUTING TO URGENT TRANSFER",
-        extra={
-            "pet_name": pet_name,
-            "species": species,
-            "reason": reason,
-        }
-    )
-
-    if _prompt_manager and _current_session:
-        new_prompt = _prompt_manager.transition_to(
-            PromptPhase.URGENT_TRANSFER,
-            context_updates={
-                "pet_name": pet_name,
-                "species": species,
-                "reason": reason,
-                "caller_phone": caller_phone,
-                "triage_result": "urgent",
-            },
-        )
-
-        # Create new agent with urgent transfer prompt and switch to it
-        # Phase 2: Gets full tools including data collection
-        new_agent = NoraAgent(
-            instructions=new_prompt,
-            tools=_get_phase2_tools(),
-        )
-        _current_session.update_agent(new_agent)
-        logger.info(f"AGENT SWITCHED to URGENT_TRANSFER (~{len(new_prompt)//4} tokens)")
-
-    # Return explicit guidance - don't let the LLM improvise
-    return f"SAY THIS: I understand {pet_name or 'your pet'} needs urgent care. Let me collect a few details to help our team assist you quickly. What's the best phone number to reach you at?"
-
-
-@function_tool
-async def route_to_message_flow(
-    context: RunContext,
-    pet_name: str = "",
-    species: str = "",
-    reason: str = "",
-    caller_phone: str = "",
-) -> str:
-    """Route to message flow when request can wait for callback.
-
-    Call this when the caller confirms their request is not urgent
-    and can wait for office staff to return their call.
-    """
-    global _prompt_manager, _current_session
-
-    logger.info(
-        "ROUTING TO MESSAGE FLOW",
-        extra={
-            "pet_name": pet_name,
-            "species": species,
-            "reason": reason,
-        }
-    )
-
-    if _prompt_manager and _current_session:
-        new_prompt = _prompt_manager.transition_to(
-            PromptPhase.MESSAGE_FLOW,
-            context_updates={
-                "pet_name": pet_name,
-                "species": species,
-                "reason": reason,
-                "caller_phone": caller_phone,
-                "triage_result": "can_wait",
-            },
-        )
-
-        # Create new agent with message flow prompt and switch to it
-        # Phase 2: Gets full tools including data collection
-        new_agent = NoraAgent(
-            instructions=new_prompt,
-            tools=_get_phase2_tools(),
-        )
-        _current_session.update_agent(new_agent)
-        logger.info(f"AGENT SWITCHED to MESSAGE_FLOW (~{len(new_prompt)//4} tokens)")
-
-    # Return explicit guidance - don't let the LLM improvise
-    return f"SAY THIS: I can take a message for you about {pet_name or 'your pet'}. First, what's the best phone number to reach you at?"
-
-
-@function_tool
-async def route_to_critical_emergency(
-    context: RunContext,
-    pet_name: str = "",
-    species: str = "",
-    emergency_type: str = "",
-    caller_phone: str = "",
-) -> str:
-    """Route to critical emergency flow for life-threatening situations.
-
-    Call this ONLY for these specific emergencies:
-    - Hit by car
-    - Not breathing / can't breathe
-    - Active seizure
-    - Unconscious / collapsed
-    - Dead / appears dead
-
-    This is the FASTEST path - collects only phone + name then transfers.
-    """
-    global _prompt_manager, _current_session
-
-    logger.info(
-        "ROUTING TO CRITICAL EMERGENCY",
-        extra={
-            "pet_name": pet_name,
-            "emergency_type": emergency_type,
-        }
-    )
-
-    if _prompt_manager and _current_session:
-        new_prompt = _prompt_manager.transition_to(
-            PromptPhase.CRITICAL_EMERGENCY,
-            context_updates={
-                "pet_name": pet_name,
-                "species": species,
-                "emergency_type": emergency_type,
-                "caller_phone": caller_phone,
-                "triage_result": "critical_emergency",
-            },
-        )
-
-        # Create new agent with critical emergency prompt and switch to it
-        # Phase 2C: Gets full tools including transfer and hangup
-        new_agent = NoraAgent(
-            instructions=new_prompt,
-            tools=_get_phase2_tools(),
-        )
-        _current_session.update_agent(new_agent)
-        logger.info(f"AGENT SWITCHED to CRITICAL_EMERGENCY (~{len(new_prompt)//4} tokens)")
-
-    # Return EXACT text to speak - don't let the LLM improvise for emergencies
-    return f"SAY EXACTLY THIS: Given the urgency with {pet_name}, I'm connecting you to Vet Wise, our live 24/7 triage service for immediate help. First, I can see you're calling from your phone. Is that the best number to call you back on if we get disconnected?"
-
-
-# =============================================================================
-# NORA TOOLS - These execute the actual business logic
-# =============================================================================
-@function_tool
-async def transferFromAiTriageWithMetadata(
-    context: RunContext,
-    callback_number: str,
-    first_name: str,
-    last_name: str = "",
-    pet_name: str = "",
-    age: str = "",
-    species: str = "",
-    breed: str = "",
-    urgency_reason: str = "",
-) -> str:
-    """Transfer to Vet Wise with full metadata.
-
-    Use this when the caller needs immediate live assistance from a
-    registered veterinary technician.
-    """
-    logger.info(
-        "TRANSFER TRIGGERED",
-        extra={
-            "callback_number": callback_number,
-            "first_name": first_name,
-            "last_name": last_name,
-            "pet_name": pet_name,
-            "urgency_reason": urgency_reason,
-        }
-    )
-    # In production: trigger SIP transfer, webhook, etc.
-    return "Transferred to Vet Wise"
-
-
-@function_tool
-async def collectNameNumberConcernPetName(
-    context: RunContext,
-    callback_number: str,
-    first_name: str,
-    last_name: str = "",
-    pet_name: str = "",
-    concern_description: str = "",
-) -> str:
-    """Save non-urgent message for office callback.
-
-    Use this when the caller's request can wait for office staff
-    to return the call.
-    """
-    logger.info(
-        "MESSAGE SAVED",
-        extra={
-            "callback_number": callback_number,
-            "first_name": first_name,
-            "last_name": last_name,
-            "pet_name": pet_name,
-            "concern_description": concern_description,
-        }
-    )
-    # In production: save to CRM, trigger notification, etc.
-    return "Message saved"
-
-
-@function_tool
-async def hangUp(context: RunContext, reason: str = "normal") -> str:
-    """End the call gracefully.
-
-    Args:
-        reason: Reason for ending the call (e.g., 'completed', 'transferred', 'caller_request')
-    """
-    logger.info("HANGUP TRIGGERED", extra={"reason": reason})
-    # In production: trigger call termination
-    return "Call ended"
-
-
-@function_tool
-async def queryCorpus(context: RunContext, query: str) -> str:
-    """Look up breed/species information from veterinary corpus.
-
-    Use this when caller mentions a breed name to confirm the species.
-    """
-    # Simple breed lookup - in production this would query a real corpus
-    breed_map = {
-        "yorkie": "Yorkshire Terrier (dog)",
-        "yorkshire terrier": "Yorkshire Terrier (dog)",
-        "labrador": "Labrador Retriever (dog)",
-        "lab": "Labrador Retriever (dog)",
-        "labradoodle": "Labradoodle - Poodle/Labrador mix (dog)",
-        "goldendoodle": "Goldendoodle - Poodle/Golden Retriever mix (dog)",
-        "german shepherd": "German Shepherd (dog)",
-        "golden retriever": "Golden Retriever (dog)",
-        "tabby": "Tabby (cat)",
-        "persian": "Persian (cat)",
-        "siamese": "Siamese (cat)",
-        "maine coon": "Maine Coon (cat)",
-    }
-    result = breed_map.get(query.lower(), f"Unknown breed: {query}")
-    logger.info(f"queryCorpus({query}) -> {result}")
-    return result
-
-
 async def entrypoint(ctx: JobContext):
-    """Main entry point for the Nora voice agent."""
-    global _current_session, _prompt_manager
+    """Main entry point for the Nora voice agent.
 
-    logger.info("Nora agent starting with PHASED PROMPTS...")
+    Uses the Task-based workflow architecture:
+    1. GreeterAgent handles initial greeting and triage
+    2. Routing tools return specialist agents (proper handoff pattern)
+    3. Specialist agents use AgentTask for focused data collection
+    4. No infinite loops because Tasks don't have routing tools
+    """
+    logger.info("Nora agent starting with TASK-BASED WORKFLOW...")
 
     # Connect to the room
     await ctx.connect()
     logger.info(f"Connected to room: {ctx.room.name}")
-
-    # Get prompt manager
-    _prompt_manager = ctx.proc.userdata.get("prompt_manager")
-    if not _prompt_manager:
-        # Fallback: create fresh manager
-        prompts_dir = Path(__file__).parent.parent / "prompts"
-        _prompt_manager = PromptManager(
-            prompts_dir=prompts_dir,
-            office_config=_get_office_config(),
-        )
 
     # Get caller phone from room participant
     caller_phone = ""
@@ -584,12 +243,13 @@ async def entrypoint(ctx: JobContext):
         caller_phone = participant.identity or ""
         break
 
-    # Update prompt context with caller info
-    _prompt_manager.update_context(caller_phone=caller_phone)
-
-    # Start with Phase 1: Greeter prompt
-    greeter_prompt = _prompt_manager.get_prompt_for_phase(PromptPhase.GREETER)
-    logger.info(f"Starting with GREETER prompt (~{len(greeter_prompt)//4} tokens)")
+    # Create session context with caller info
+    session_context = SessionContext(
+        caller_phone=caller_phone,
+        office_name=OFFICE_NAME,
+        is_clinic_open=IS_CLINIC_OPEN,
+    )
+    logger.info(f"Session context: phone={caller_phone[:4]}..., clinic_open={IS_CLINIC_OPEN}")
 
     # Start Langfuse conversation trace (non-fatal if it fails)
     try:
@@ -605,21 +265,18 @@ async def entrypoint(ctx: JobContext):
                     "llm_model": LLM_MODEL,
                     "llm_max_tokens": LLM_MAX_TOKENS,
                     "voice_id": DEEPGRAM_TTS_VOICE,
-                    "prompt_phase": "greeter",
-                    "prompt_tokens": len(greeter_prompt) // 4,
+                    "architecture": "task_based_workflow",
                 },
             )
             logger.info("Langfuse trace started")
     except Exception as e:
         logger.warning(f"Langfuse tracing failed (non-fatal): {e}")
 
-    # Create the Nora agent with Phase 1 prompt (using NoraAgent for speech tracking)
-    # Phase 1: Greeter only gets routing tools - NO data collection tools
-    # This prevents the LLM from hallucinating data collection before greeting
-    agent = NoraAgent(
-        instructions=greeter_prompt,
-        tools=_get_greeter_tools(),
-    )
+    # Create the GreeterAgent with session context
+    # The agent's on_enter() will handle the initial greeting
+    # Routing tools on the agent return new specialist agents (proper handoff)
+    agent = GreeterAgent(session_context=session_context)
+    logger.info("GreeterAgent created with Task-based workflow")
 
     # Create the agent session based on provider mode
     if _is_realtime_mode():
@@ -647,24 +304,17 @@ async def entrypoint(ctx: JobContext):
             vad=ctx.proc.userdata["vad"],
 
             # STT - Deepgram Nova-3 (latency optimized)
-            # Note: LiveKit's Deepgram plugin handles streaming/interim results internally
-            # Endpointing is controlled via min_endpointing_delay below
-            # See: https://deepgram.com/learn/low-latency-voice-ai-and-how-to-achieve-it
             stt=deepgram.STT(
-                model="nova-3",  # Latest model with best accuracy
+                model="nova-3",
                 language="en",
-                smart_format=True,  # Better formatting of numbers, dates
-                filler_words=False,  # Remove "um", "uh" for cleaner transcripts
+                smart_format=True,
+                filler_words=False,
             ),
 
-            # LLM - Configurable provider (openai, groq, cerebras)
-            # max_tokens limits response length for faster voice responses
+            # LLM - Configurable provider (openai, groq)
             llm=_get_llm(),
 
-            # TTS - Deepgram Aura-2 (same provider as STT = reduced latency)
-            # Benefits: No extra network hop, shared connection, ~50ms savings
-            # Streaming is enabled by default - audio chunks sent as generated
-            # WRAPPED with SanitizedTTS to remove function call syntax from LLM output
+            # TTS - Deepgram Aura-2 with sanitizer
             tts=wrap_tts(deepgram.TTS(
                 model=DEEPGRAM_TTS_VOICE,
             )),
@@ -673,10 +323,8 @@ async def entrypoint(ctx: JobContext):
             turn_detection=_get_turn_detector() if USE_TURN_DETECTOR else None,
 
             # Endpointing delays (aggressive for low latency)
-            # min: Time to wait after speech stops before triggering response
-            # max: Maximum time to wait even if turn detector uncertain
-            min_endpointing_delay=0.25,    # Reduced from 0.3 for faster response
-            max_endpointing_delay=1.2,     # Reduced from 1.5 for snappier conversation
+            min_endpointing_delay=0.25,
+            max_endpointing_delay=1.2,
 
             # Enable preemptive generation
             preemptive_generation=True,
@@ -686,9 +334,6 @@ async def entrypoint(ctx: JobContext):
             min_interruption_duration=0.5,
         )
 
-    # Store session reference for prompt switching
-    _current_session = session
-
     # Set up Langfuse metrics collection
     tracer = get_tracer()
     usage_collector = metrics.UsageCollector()
@@ -696,13 +341,9 @@ async def entrypoint(ctx: JobContext):
     @session.on("metrics_collected")
     def on_metrics_collected(ev):
         """Handle LiveKit metrics and send to Langfuse."""
-        # Log metrics locally
         metrics.log_metrics(ev.metrics)
-
-        # Accumulate for session summary
         usage_collector.collect(ev.metrics)
 
-        # Send to Langfuse (non-fatal)
         try:
             if tracer and tracer.enabled:
                 tracer.trace_metrics(ev.metrics)
@@ -712,61 +353,30 @@ async def entrypoint(ctx: JobContext):
     # Register shutdown callback to end Langfuse trace
     async def on_shutdown():
         """Clean up when session ends."""
-        global _current_session, _prompt_manager
         try:
             summary = usage_collector.get_summary()
             logger.info(f"Session usage summary: {summary}")
 
-            # Log final prompt phase
-            if _prompt_manager:
-                final_phase = _prompt_manager.current_phase
-                logger.info(f"Final prompt phase: {final_phase.value}")
-
             if tracer and tracer.enabled:
                 tracer.end_conversation(
                     outcome="completed",
-                    metadata={
-                        "usage_summary": str(summary),
-                        "final_phase": _prompt_manager.current_phase.value if _prompt_manager else "unknown",
-                    },
+                    metadata={"usage_summary": str(summary)},
                 )
         except Exception as e:
             logger.warning(f"Langfuse shutdown failed: {e}")
 
-        # Clear global state
-        _current_session = None
-        _prompt_manager = None
-
     ctx.add_shutdown_callback(on_shutdown)
 
-    # Start the session
+    # Start the session - GreeterAgent.on_enter() handles initial greeting
     await session.start(agent=agent, room=ctx.room)
 
-    # Generate the proper Nora greeting based on clinic status
-    if IS_CLINIC_OPEN:
-        greeting = (
-            f"Thank you for calling {OFFICE_NAME}. "
-            "We're currently open but assisting other callers. "
-            "I'm Nora, the virtual assistant. How can I help you today?"
-        )
-    else:
-        greeting = (
-            f"Thank you for calling {OFFICE_NAME}. "
-            "The office is currently closed, but I'm Nora, "
-            "the virtual assistant here to help. How can I assist you?"
-        )
-
-    await session.generate_reply(instructions=f"Say exactly this: {greeting}")
-
-    logger.info(f"Nora is running with PHASED PROMPTS for {OFFICE_NAME}")
-    logger.info(f"  Current phase: {_prompt_manager.current_phase.value}")
-    logger.info(f"  Initial tokens: ~{_prompt_manager.get_estimated_tokens()}")
+    logger.info(f"Nora is running with TASK-BASED WORKFLOW for {OFFICE_NAME}")
 
 
 def main():
     """Run the Nora voice agent."""
     print("\n" + "=" * 60)
-    print("  NORA VETERINARY ASSISTANT - PHASED PROMPTS")
+    print("  NORA VETERINARY ASSISTANT - TASK-BASED WORKFLOW")
     print("=" * 60)
 
     # Check required environment variables
@@ -774,7 +384,7 @@ def main():
         "LIVEKIT_URL": os.getenv("LIVEKIT_URL"),
         "LIVEKIT_API_KEY": os.getenv("LIVEKIT_API_KEY"),
         "LIVEKIT_API_SECRET": os.getenv("LIVEKIT_API_SECRET"),
-        "DEEPGRAM_API_KEY": os.getenv("DEEPGRAM_API_KEY"),  # Used for both STT and TTS
+        "DEEPGRAM_API_KEY": os.getenv("DEEPGRAM_API_KEY"),
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
     }
 
@@ -793,12 +403,12 @@ def main():
     print(f"  Hours: {OFFICE_HOURS}")
     print(f"  Currently Open: {'YES' if IS_CLINIC_OPEN else 'NO'}")
 
-    print("\nPHASED PROMPTS (Latency Optimization):")
-    print("  Phase 1 (Greeter):           ~500 tokens (vs 18K original)")
-    print("  Phase 2A (Urgent Transfer):  ~1,200 tokens")
-    print("  Phase 2B (Message Flow):     ~1,000 tokens")
-    print("  Phase 2C (Critical Emerg):   ~400 tokens")
-    print("  → 60-70% token reduction per turn!")
+    print("\nTASK-BASED WORKFLOW ARCHITECTURE:")
+    print("  GreeterAgent → Triage and routing")
+    print("    ├── UrgentTransferAgent (CollectUrgentInfoTask)")
+    print("    ├── MessageFlowAgent (CollectMessageInfoTask)")
+    print("    └── CriticalEmergencyAgent (CollectCriticalInfoTask)")
+    print("  → No infinite loops! Tasks have focused tools only.")
 
     print("\nVoice Pipeline:")
     print(f"  STT: Deepgram Nova-3")
@@ -822,20 +432,20 @@ def main():
     else:
         print("  Langfuse: ○ Disabled")
 
-    print("\nRouting Tools (trigger prompt switches):")
-    print("  ✓ route_to_urgent_transfer")
-    print("  ✓ route_to_message_flow")
-    print("  ✓ route_to_critical_emergency")
+    print("\nAgent Routing (GreeterAgent methods):")
+    print("  ✓ route_to_urgent_transfer → Returns UrgentTransferAgent")
+    print("  ✓ route_to_message_flow → Returns MessageFlowAgent")
+    print("  ✓ route_to_critical_emergency → Returns CriticalEmergencyAgent")
+    print("  ✓ queryCorpus → Breed/species lookup")
 
-    print("\nBusiness Tools:")
-    print("  ✓ transferFromAiTriageWithMetadata")
-    print("  ✓ collectNameNumberConcernPetName")
-    print("  ✓ hangUp")
-    print("  ✓ queryCorpus")
+    print("\nData Collection Tasks (focused tools, no routing):")
+    print("  ✓ CollectUrgentInfoTask → record_callback, record_name, record_pet...")
+    print("  ✓ CollectMessageInfoTask → record_callback, record_name, record_concern...")
+    print("  ✓ CollectCriticalInfoTask → record_callback_confirmed, record_first_name")
 
     print("\n" + "-" * 60)
-    print("Starting Nora with PHASED PROMPTS...")
-    print("Expected latency improvement: 3-5x faster initial response")
+    print("Starting Nora with TASK-BASED WORKFLOW...")
+    print("Architecture: Proper agent handoffs prevent infinite loops!")
     print("To test: Open https://agents-playground.livekit.io")
     print("-" * 60 + "\n")
 
