@@ -319,9 +319,11 @@ async def entrypoint(ctx: JobContext):
             # LLM - Configurable provider (openai, groq)
             llm=_get_llm(),
 
-            # TTS - Cartesia Sonic (ultra-low latency) with sanitizer
+            # TTS - Cartesia Sonic-3 (ultra-low latency) with sanitizer
             tts=wrap_tts(cartesia.TTS(
+                model="sonic-3",
                 voice=CARTESIA_VOICE_ID,
+                language="en",
             )),
 
             # Turn detection - English model
