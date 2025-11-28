@@ -180,9 +180,9 @@ def _get_llm():
         if not os.getenv("GROQ_API_KEY"):
             logger.warning("GROQ_API_KEY not set, falling back to OpenAI")
             return openai.LLM(model="gpt-4o-mini", temperature=0.7)
-        # Groq models: llama-3-groq-8b-tool-use (best for function calling), llama-3.3-70b-versatile
-        # Note: llama-3-groq-8b-tool-use uses proper tool_call API, not text output of function syntax
-        groq_model = model if model.startswith("llama") or model.startswith("mixtral") else "llama-3-groq-8b-tool-use"
+        # Groq models: llama-3.1-8b-instant (fast), llama-3.3-70b-versatile (better quality)
+        # Note: All Groq models support tool calling - the issue is model behavior, not capability
+        groq_model = model if model.startswith("llama") or model.startswith("mixtral") else "llama-3.1-8b-instant"
         logger.info(f"Using Groq with model: {groq_model}")
         return groq.LLM(model=groq_model, temperature=0.7)
 
