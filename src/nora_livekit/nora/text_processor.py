@@ -290,15 +290,18 @@ class NoraTextProcessor:
 
         original = text
 
-        # Pattern 1: <function=name> or <function.name> XML-style format (Groq/Llama output)
+        # Pattern 1: <function=name>, <function.name>, <function$name> XML-style format (Groq/Llama output)
         # Matches: <function=route_to_urgent_transfer>{"caller_phone":"..."}</function>
         # Also matches: <function.route_to_message_flow{"caller_phone":"..."}</function> (dot format)
-        # Note: Llama models use both = and . separators inconsistently
-        text = re.sub(r'<function[=.][^>]*>.*?</function>', '', text, flags=re.DOTALL)
-        text = re.sub(r'<function[=.][^>]*>\s*\{[^}]*\}', '', text)
-        text = re.sub(r'<function[=.][^{]*\{[^}]*\}</function>', '', text, flags=re.DOTALL)
-        text = re.sub(r'<function[=.][^{]*\{[^}]*\}', '', text)
-        text = re.sub(r'<function[=.][^>]*>[^\s]*', '', text)
+        # Also matches: <function$route_to_critical_emergency{"pet_name":"..."}</function> (dollar format)
+        # Note: Llama/Groq models use =, ., and $ separators inconsistently
+        text = re.sub(r'<function[=.$][^>]*>.*?</function>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<function[=.$][^>]*>\s*\{[^}]*\}', '', text)
+        text = re.sub(r'<function[=.$][^{]*\{[^}]*\}</function>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<function[=.$][^{]*\{[^}]*\}', '', text)
+        text = re.sub(r'<function[=.$][^>]*>[^\s]*', '', text)
+        # Also handle any <function...> without closing tag followed by JSON
+        text = re.sub(r'<function[^>]*\{[^}]*\}', '', text)
 
         # Pattern 2: function_name(args) format
         # Matches: transferFromAiTriageWithMetadata(callback_number="...", ...)
