@@ -445,15 +445,21 @@ def main():
 
     print("\n" + "-" * 60)
     print("Starting Nora with TASK-BASED WORKFLOW...")
+    print("Agent Name: nora-v2 (explicit dispatch)")
     print("Architecture: Proper agent handoffs prevent infinite loops!")
-    print("To test: Open https://agents-playground.livekit.io")
+    print("")
+    print("NOTE: Named agents require explicit dispatch!")
+    print("  - Configure SIP dispatch rule with agent_name='nora-v2'")
+    print("  - Or use AgentDispatch API to dispatch to rooms")
     print("-" * 60 + "\n")
 
-    # Run the agent
+    # Run the agent with explicit dispatch (named agent)
+    # This prevents conflicts with the old contaminated unnamed agent
     cli.run_app(
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
+            agent_name="nora-v2",  # Named agent for explicit dispatch
             num_idle_processes=1,
             job_memory_warn_mb=300,
         ),
