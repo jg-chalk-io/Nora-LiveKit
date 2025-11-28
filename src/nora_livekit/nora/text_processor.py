@@ -290,12 +290,15 @@ class NoraTextProcessor:
 
         original = text
 
-        # Pattern 1: <function=name>...</function> XML-style format (Groq's common output)
+        # Pattern 1: <function=name> or <function.name> XML-style format (Groq/Llama output)
         # Matches: <function=route_to_urgent_transfer>{"caller_phone":"..."}</function>
-        # Also matches without closing tag: <function=route_to_message_flow>{"caller_phone":"..."}
-        text = re.sub(r'<function=[^>]+>.*?</function>', '', text, flags=re.DOTALL)
-        text = re.sub(r'<function=[^>]+>\s*\{[^}]*\}', '', text)
-        text = re.sub(r'<function=[^>]+>[^\s]*', '', text)
+        # Also matches: <function.route_to_message_flow{"caller_phone":"..."}</function> (dot format)
+        # Note: Llama models use both = and . separators inconsistently
+        text = re.sub(r'<function[=.][^>]*>.*?</function>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<function[=.][^>]*>\s*\{[^}]*\}', '', text)
+        text = re.sub(r'<function[=.][^{]*\{[^}]*\}</function>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<function[=.][^{]*\{[^}]*\}', '', text)
+        text = re.sub(r'<function[=.][^>]*>[^\s]*', '', text)
 
         # Pattern 2: function_name(args) format
         # Matches: transferFromAiTriageWithMetadata(callback_number="...", ...)

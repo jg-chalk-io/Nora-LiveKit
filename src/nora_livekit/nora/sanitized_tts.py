@@ -125,7 +125,9 @@ class SanitizedSynthesizeStream:
         """
         # FAST PATH: If no function syntax detected, pass through immediately
         # This avoids buffering delays for normal text (99% of cases)
-        if "<function=" not in self._buffer and "<function=" not in text:
+        # Note: Llama models output both <function= and <function. formats
+        has_func_syntax = "<function" in self._buffer or "<function" in text
+        if not has_func_syntax:
             # No function syntax - pass through without modification
             self._wrapped.push_text(text)
             return
@@ -134,8 +136,9 @@ class SanitizedSynthesizeStream:
         self._buffer += text
 
         # Check if we have complete function call syntax to remove
+        # Handle both <function=name> and <function.name> formats
         if "</function>" in self._buffer or (
-            "<function=" in self._buffer and "}" in self._buffer
+            "<function" in self._buffer and "}" in self._buffer
         ):
             # Sanitize and flush
             sanitized = self._processor.sanitize_function_calls(self._buffer)
