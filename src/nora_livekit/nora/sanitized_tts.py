@@ -123,33 +123,32 @@ class SanitizedSynthesizeStream:
         Args:
             text: Text chunk to synthesize
         """
-        # FAST PATH: If no function syntax detected, pass through immediately
-        # This avoids buffering delays for normal text (99% of cases)
-        # Note: Llama models output both <function= and <function. formats
-        has_func_syntax = "<function" in self._buffer or "<function" in text
-        if not has_func_syntax:
-            # No function syntax - pass through without modification
-            self._wrapped.push_text(text)
-            return
-
-        # SLOW PATH: Function syntax detected - buffer and sanitize
+        # ALWAYS BUFFER: LLM streaming sends tokens piece by piece, so
+        # "<function$..." may arrive as "<func" + "tion$" + "route..." etc.
+        # We must buffer everything and sanitize before sending to TTS.
         self._buffer += text
 
-        # Check if we have complete function call syntax to remove
-        # Handle both <function=name> and <function.name> formats
-        if "</function>" in self._buffer or (
-            "<function" in self._buffer and "}" in self._buffer
-        ):
-            # Sanitize and flush
-            sanitized = self._processor.sanitize_function_calls(self._buffer)
-            if sanitized:
-                self._wrapped.push_text(sanitized)
-            self._buffer = ""
-        elif len(self._buffer) > 500:
-            # Safety: flush if buffer gets too long
-            sanitized = self._processor.sanitize_function_calls(self._buffer)
-            if sanitized:
-                self._wrapped.push_text(sanitized)
+        # If ANY '<' character exists, hold everything until end_input()
+        # Function calls always start with '<' and legitimate TTS text rarely has it
+        if '<' in self._buffer:
+            # Potential function call - wait for end_input to sanitize
+            return
+
+        # No '<' character - safe to flush on sentence boundaries for low latency
+        # Check for sentence-ending punctuation
+        for punct in ['. ', '? ', '! ', '.\n', '?\n', '!\n']:
+            if punct in self._buffer:
+                # Find last sentence boundary and flush up to it
+                idx = self._buffer.rfind(punct) + len(punct)
+                to_flush = self._buffer[:idx]
+                self._buffer = self._buffer[idx:]
+                if to_flush.strip():
+                    self._wrapped.push_text(to_flush)
+                return
+
+        # No sentence boundary and no '<' - flush if buffer is getting long
+        if len(self._buffer) > 400:
+            self._wrapped.push_text(self._buffer)
             self._buffer = ""
 
     def flush(self) -> None:
