@@ -227,6 +227,36 @@ def prewarm(proc: JobProcess):
     logger.info("Models prewarmed successfully!")
 
 
+# Pre-defined greeting texts (one for open, one for closed)
+GREETING_CLOSED = f"Thank you for calling {OFFICE_NAME}. The office is currently closed, but I'm Nora, the virtual assistant here to help. How can I assist you?"
+GREETING_OPEN = f"Thank you for calling {OFFICE_NAME}. We're currently open but assisting other callers. I'm Nora, the virtual assistant. How can I help you today?"
+
+
+async def pre_synthesize_greeting(is_open: bool) -> list:
+    """Pre-synthesize greeting audio for instant playback.
+
+    Returns list of AudioFrames that can be passed to session.say(audio=...).
+    """
+    greeting_text = GREETING_OPEN if is_open else GREETING_CLOSED
+
+    logger.info(f"Pre-synthesizing greeting (clinic_open={is_open})...")
+
+    tts = cartesia.TTS(
+        model="sonic-3",
+        voice=CARTESIA_VOICE_ID,
+        language="en",
+    )
+
+    # Collect all audio frames
+    audio_frames = []
+    async for event in tts.synthesize(greeting_text):
+        if hasattr(event, 'frame') and event.frame:
+            audio_frames.append(event.frame)
+
+    logger.info(f"Pre-synthesized greeting: {len(audio_frames)} frames")
+    return audio_frames, greeting_text
+
+
 async def entrypoint(ctx: JobContext):
     """Main entry point for the Nora voice agent.
 
@@ -237,6 +267,9 @@ async def entrypoint(ctx: JobContext):
     4. No infinite loops because Tasks don't have routing tools
     """
     logger.info("Nora agent starting with TASK-BASED WORKFLOW...")
+
+    # Pre-synthesize greeting BEFORE connecting (reduces first-utterance latency)
+    greeting_audio, greeting_text = await pre_synthesize_greeting(IS_CLINIC_OPEN)
 
     # Connect to the room
     await ctx.connect()
@@ -277,11 +310,15 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         logger.warning(f"Langfuse tracing failed (non-fatal): {e}")
 
-    # Create the GreeterAgent with session context
-    # The agent's on_enter() will handle the initial greeting
+    # Create the GreeterAgent with session context and pre-synthesized greeting
+    # The agent's on_enter() will play the pre-synthesized audio instantly
     # Routing tools on the agent return new specialist agents (proper handoff)
-    agent = GreeterAgent(session_context=session_context)
-    logger.info("GreeterAgent created with Task-based workflow")
+    agent = GreeterAgent(
+        session_context=session_context,
+        prewarmed_greeting_audio=greeting_audio,
+        prewarmed_greeting_text=greeting_text,
+    )
+    logger.info("GreeterAgent created with pre-synthesized greeting")
 
     # Create the agent session based on provider mode
     if _is_realtime_mode():

@@ -24,10 +24,20 @@ Agent Flow:
 
 import os
 import structlog
-from typing import Optional
+from typing import Optional, AsyncIterator, List, Any
 from dataclasses import dataclass
 
 from livekit.agents import Agent, AgentSession, function_tool, RunContext, get_job_context
+
+
+async def _async_iter_frames(frames: List[Any]) -> AsyncIterator[Any]:
+    """Convert a list of audio frames to an async iterator.
+
+    session.say(audio=...) expects AsyncIterable[rtc.AudioFrame],
+    so we need to convert our pre-synthesized list to an async iterator.
+    """
+    for frame in frames:
+        yield frame
 
 from .data import SessionContext, UrgentTransferData, MessageFlowData, CriticalEmergencyData
 from .tasks import CollectUrgentInfoTask, CollectMessageInfoTask, CollectCriticalInfoTask
@@ -55,6 +65,8 @@ class GreeterAgent(Agent):
         self,
         chat_ctx=None,
         session_context: Optional[SessionContext] = None,
+        prewarmed_greeting_audio: Optional[list] = None,
+        prewarmed_greeting_text: Optional[str] = None,
     ):
         # Load prompts from files if available, otherwise use defaults
         instructions = self._load_greeter_instructions()
@@ -65,6 +77,8 @@ class GreeterAgent(Agent):
         )
 
         self._context = session_context or SessionContext()
+        self._prewarmed_greeting_audio = prewarmed_greeting_audio
+        self._prewarmed_greeting_text = prewarmed_greeting_text
 
     def _load_greeter_instructions(self) -> str:
         """Load greeter prompt from file or use default."""
@@ -109,7 +123,28 @@ After hearing their concern, ask: "Does your pet need immediate medical assistan
 IMPORTANT: Call the routing tool and STOP. The new agent will take over."""
 
     async def on_enter(self) -> None:
-        """Greet the caller when agent starts."""
+        """Greet the caller when agent starts.
+
+        Uses pre-synthesized audio if available for instant playback (no TTS delay).
+        Falls back to generate_reply() if no prewarmed audio.
+        """
+        # If we have pre-synthesized greeting audio, use it for instant playback
+        if self._prewarmed_greeting_audio and self._prewarmed_greeting_text:
+            logger.info(
+                "greeter.using_prewarmed_audio",
+                audio_frames=len(self._prewarmed_greeting_audio),
+                text_len=len(self._prewarmed_greeting_text),
+            )
+            # session.say() with audio skips TTS entirely - instant playback
+            # Convert list to async iterator (session.say expects AsyncIterable)
+            await self.session.say(
+                text=self._prewarmed_greeting_text,
+                audio=_async_iter_frames(self._prewarmed_greeting_audio),
+            )
+            return
+
+        # Fallback: No prewarmed audio, use generate_reply() (slower)
+        logger.info("greeter.no_prewarmed_audio_fallback")
         if self._context.is_clinic_open:
             await self.session.generate_reply(
                 instructions=f"Greet: 'Thank you for calling {self._context.office_name}. We're currently open but assisting other callers. I'm Nora, the virtual assistant. How can I help you today?'"
