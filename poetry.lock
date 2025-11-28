@@ -1663,6 +1663,20 @@ files = [
 ]
 
 [[package]]
+name = "livekit-plugins-cartesia"
+version = "1.3.5"
+description = "LiveKit Agents Plugin for Cartesia"
+optional = false
+python-versions = ">=3.9.0"
+files = [
+    {file = "livekit_plugins_cartesia-1.3.5-py3-none-any.whl", hash = "sha256:e50213691dbcd077c716a42daa561bfffb2ca08fc80e082cf34fca3f3eb70f0e"},
+    {file = "livekit_plugins_cartesia-1.3.5.tar.gz", hash = "sha256:d818120ed79971e47dd384ecb9ee6f4416bd4bfd4c88e01965895a778198656f"},
+]
+
+[package.dependencies]
+livekit-agents = ">=1.3.5"
+
+[[package]]
 name = "livekit-plugins-deepgram"
 version = "1.3.5"
 description = "Agent Framework plugin for services using Deepgram's API."
@@ -4333,4 +4347,4 @@ ultravox = ["livekit-plugins-ultravox"]
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "3cb9c7603df04c9a6ed8cb625ab72d06317da331f57b6f116eaa6abcbedddc6f"
+content-hash = "da36dd800c4615b0236339880554b6cca624690cb8948dfc1024e83a4ce9a29b"

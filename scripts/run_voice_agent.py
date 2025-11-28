@@ -49,6 +49,7 @@ from livekit.agents import (
 import livekit.plugins.deepgram as deepgram
 import livekit.plugins.silero as silero
 import livekit.plugins.openai as openai
+import livekit.plugins.cartesia as cartesia
 
 # Optional LLM providers - imported conditionally
 try:
@@ -109,10 +110,14 @@ IS_CLINIC_OPEN = os.getenv("IS_CLINIC_OPEN", "false").lower() == "true"
 
 # =============================================================================
 # TTS VOICE CONFIGURATION
-# Deepgram Aura-2 voices: https://developers.deepgram.com/docs/tts-models
-# Options: aura-2-thalia-en (clearer), aura-2-helena-en, aura-2-andromeda-en
+# Cartesia Sonic - ultra-low latency TTS (~100-300ms vs 4-9s for Deepgram)
+# Browse voices: https://play.cartesia.ai/
 # =============================================================================
+CARTESIA_VOICE_ID = os.getenv("CARTESIA_VOICE_ID", "996a8b96-4804-46f0-8e05-3fd4ef1a87cd")
+# Fallback: Deepgram Aura-2 (slower but reliable)
 DEEPGRAM_TTS_VOICE = os.getenv("DEEPGRAM_TTS_VOICE", "aura-2-thalia-en")
+# TTS Provider: cartesia (fast) or deepgram (fallback)
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "cartesia")
 
 # =============================================================================
 # LLM PROVIDER CONFIGURATION
@@ -314,9 +319,9 @@ async def entrypoint(ctx: JobContext):
             # LLM - Configurable provider (openai, groq)
             llm=_get_llm(),
 
-            # TTS - Deepgram Aura-2 with sanitizer
-            tts=wrap_tts(deepgram.TTS(
-                model=DEEPGRAM_TTS_VOICE,
+            # TTS - Cartesia Sonic (ultra-low latency) with sanitizer
+            tts=wrap_tts(cartesia.TTS(
+                voice=CARTESIA_VOICE_ID,
             )),
 
             # Turn detection - English model
@@ -413,7 +418,7 @@ def main():
     print("\nVoice Pipeline:")
     print(f"  STT: Deepgram Nova-3")
     print(f"  LLM: {LLM_PROVIDER}/{LLM_MODEL} (max_tokens={LLM_MAX_TOKENS})")
-    print(f"  TTS: Deepgram Aura-2 (voice: {DEEPGRAM_TTS_VOICE})")
+    print(f"  TTS: Cartesia Sonic (voice: {CARTESIA_VOICE_ID})")
     print(f"  TTS Sanitizer: ✓ Enabled (removes function call syntax)")
     print(f"  Turn Detection: {'Enabled' if USE_TURN_DETECTOR else 'Disabled'}")
 
