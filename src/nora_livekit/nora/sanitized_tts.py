@@ -123,19 +123,28 @@ class SanitizedSynthesizeStream:
         Args:
             text: Text chunk to synthesize
         """
-        # Buffer text to handle partial function calls across chunks
+        # FAST PATH: If no function syntax detected, pass through immediately
+        # This avoids buffering delays for normal text (99% of cases)
+        if "<function=" not in self._buffer and "<function=" not in text:
+            # No function syntax - pass through without modification
+            self._wrapped.push_text(text)
+            return
+
+        # SLOW PATH: Function syntax detected - buffer and sanitize
         self._buffer += text
 
-        # Sanitize the buffered text
-        sanitized = self._processor.sanitize_function_calls(self._buffer)
-
-        # If buffer looks complete (ends with sentence terminator), flush
-        if sanitized and sanitized[-1] in '.?!':
+        # Check if we have complete function call syntax to remove
+        if "</function>" in self._buffer or (
+            "<function=" in self._buffer and "}" in self._buffer
+        ):
+            # Sanitize and flush
+            sanitized = self._processor.sanitize_function_calls(self._buffer)
             if sanitized:
                 self._wrapped.push_text(sanitized)
             self._buffer = ""
         elif len(self._buffer) > 500:
-            # Flush if buffer gets too long
+            # Safety: flush if buffer gets too long
+            sanitized = self._processor.sanitize_function_calls(self._buffer)
             if sanitized:
                 self._wrapped.push_text(sanitized)
             self._buffer = ""
